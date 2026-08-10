@@ -1,36 +1,99 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 문항 카드 스튜디오
 
-## Getting Started
+PDF 문제지에서 문항 영역을 검토·저장하고, 문항 카드를 조합해 HWPX 문제지를 만드는 개인용 웹앱입니다.
 
-First, run the development server:
+## 저장 구조
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+무료 사용을 우선해 파일과 메타데이터를 분리합니다.
+
+- Firebase Authentication: 이메일/비밀번호 로그인
+- Cloud Firestore: 과목, 단원, 문항 좌표, 태그 등 작은 메타데이터
+- PC 로컬 폴더: 원본 PDF, 문항 이미지, HWPX 템플릿과 결과물
+- Firebase Storage: 사용하지 않음
+
+브라우저의 File System Access API로 사용자가 선택한 폴더에 직접 저장합니다. 최신 Chrome 또는 Edge에서 `localhost`나 HTTPS 주소로 실행해야 합니다.
+
+```text
+선택한 폴더/
+  documents/{documentId}/source.pdf
+  questions/{questionId}/question.png
+  templates/{templateVersion}/template.hwpx
+  exports/{exportId}/result.hwpx
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+폴더 접근 권한은 브라우저가 관리합니다. 브라우저를 다시 열었을 때 보안상 쓰기 권한을 한 번 더 요청할 수 있습니다.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 현재 구현
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Next.js 16 App Router, TypeScript strict, Tailwind CSS
+- 대시보드, PDF 문서, 문항 카드, 문제지 제작, 분류 체계, 설정 화면
+- Firebase 이메일 로그인 클라이언트와 Admin 지연 초기화
+- Firestore 보안 규칙과 복합 인덱스
+- PDF 형식·50MB 제한·저작권 확인 업로드 UX
+- PC 저장 폴더 선택 및 IndexedDB 폴더 핸들 보존
+- 선택한 폴더의 `documents/{documentId}/source.pdf`에 PDF 직접 저장
+- PDF.js 페이지 렌더링과 저해상도 페이지 썸네일
+- 문항 번호 텍스트 좌표 기반 1단·2단 영역 자동 제안
+- 영역 직접 생성, 이동, 크기 조절, 삭제, 실행 취소·다시 실행
+- 스캔 페이지 OCR 필요 표시와 검수 완료 상태 관리
+- `documents/{documentId}/review-draft.json` 검수 초안 저장
+- `/api/health` 구성 상태 점검
 
-## Learn More
+문항 이미지 생성, Firestore 메타데이터 확정 저장, HWPX 생성기는 후속 단계입니다.
 
-To learn more about Next.js, take a look at the following resources:
+## 로컬 실행
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```powershell
+npm install
+Copy-Item .env.example .env.local
+npm run dev
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Chrome 또는 Edge에서 `http://localhost:3000/settings`를 열고 **저장 폴더 선택**을 누릅니다. Firebase 값이 없어도 화면과 로컬 PDF 저장은 확인할 수 있습니다.
 
-## Deploy on Vercel
+PDF를 저장하면 업로드 창의 **검수 편집기 열기**를 눌러 자동 탐지 결과를 검토할 수 있습니다. 브라우저를 다시 연 뒤에는 설정에서 같은 저장 폴더를 다시 허용해야 할 수 있습니다.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Firebase 무료 설정
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Firebase 프로젝트를 만듭니다.
+2. Authentication에서 이메일/비밀번호 로그인을 활성화합니다.
+3. Cloud Firestore만 생성합니다.
+4. `.env.example`을 `.env.local`로 복사하고 Web SDK 값을 입력합니다.
+5. 서버 기능이 필요하면 Admin SDK 환경 변수도 입력합니다.
+6. Firestore 규칙과 인덱스를 배포합니다.
+
+```powershell
+firebase login
+firebase use <project-id>
+firebase deploy --only firestore:rules,firestore:indexes
+```
+
+Cloud Storage 생성, Storage 규칙 배포, Blaze 요금제 등록은 하지 않습니다. 서비스 계정 JSON이나 실제 비밀값은 저장소에 커밋하지 않습니다.
+
+## 검증
+
+```powershell
+npm run verify
+```
+
+검증 범위는 ESLint, TypeScript, Vitest 단위 테스트, Next.js 프로덕션 빌드입니다.
+
+## Firestore 경로
+
+```text
+users/{uid}
+workspaces/{workspaceId}
+  members/{uid}
+  subjects/{subjectId}
+  categories/{categoryId}
+  tags/{tagId}
+  sourceDocuments/{documentId}
+  questions/{questionId}
+    regions/{regionId}
+    assets/{assetId}
+  examSets/{examSetId}
+    items/{itemId}
+  exports/{exportId}
+```
+
+Firestore에는 로컬 절대 경로를 저장하지 않고 `documents/{documentId}/source.pdf` 같은 상대 경로만 기록합니다.

@@ -1,0 +1,90 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function member(workspaceId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+    }
+    function role(workspaceId) {
+      return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.role;
+    }
+    function canEdit(workspaceId) {
+      return member(workspaceId) && role(workspaceId) in ['owner', 'editor'];
+    }
+    function owner(workspaceId) {
+      return member(workspaceId) && role(workspaceId) == 'owner';
+    }
+
+    match /users/{uid} {
+      allow read, create, update: if signedIn() && request.auth.uid == uid;
+      allow delete: if false;
+    }
+
+    match /workspaces/{workspaceId} {
+      allow read: if member(workspaceId);
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow update, delete: if owner(workspaceId);
+
+      match /members/{uid} {
+        allow read: if member(workspaceId);
+        allow write: if owner(workspaceId);
+      }
+
+      match /subjects/{id} {
+        allow read: if member(workspaceId);
+        allow create, update: if canEdit(workspaceId);
+        allow delete: if owner(workspaceId);
+      }
+      match /categories/{id} {
+        allow read: if member(workspaceId);
+        allow create, update: if canEdit(workspaceId);
+        allow delete: if owner(workspaceId);
+      }
+      match /tags/{id} {
+        allow read: if member(workspaceId);
+        allow write: if canEdit(workspaceId);
+      }
+      match /sourceDocuments/{id} {
+        allow read: if member(workspaceId);
+        allow create: if canEdit(workspaceId) && request.resource.data.createdBy == request.auth.uid;
+        allow update: if canEdit(workspaceId)
+          && request.resource.data.createdBy == resource.data.createdBy;
+        allow delete: if owner(workspaceId);
+      }
+      match /questions/{questionId} {
+        allow read: if member(workspaceId);
+        allow create: if canEdit(workspaceId) && request.resource.data.createdBy == request.auth.uid;
+        allow update: if canEdit(workspaceId)
+          && request.resource.data.createdBy == resource.data.createdBy;
+        allow delete: if owner(workspaceId);
+
+        match /regions/{id} {
+          allow read: if member(workspaceId);
+          allow write: if canEdit(workspaceId);
+        }
+        match /assets/{id} {
+          allow read: if member(workspaceId);
+          allow write: if canEdit(workspaceId);
+        }
+      }
+      match /examSets/{examSetId} {
+        allow read: if member(workspaceId);
+        allow create: if canEdit(workspaceId) && request.resource.data.createdBy == request.auth.uid;
+        allow update: if canEdit(workspaceId)
+          && request.resource.data.createdBy == resource.data.createdBy;
+        allow delete: if owner(workspaceId);
+
+        match /items/{id} {
+          allow read: if member(workspaceId);
+          allow write: if canEdit(workspaceId);
+        }
+      }
+      match /exports/{id} {
+        allow read: if member(workspaceId);
+        allow create: if canEdit(workspaceId) && request.resource.data.createdBy == request.auth.uid;
+        allow update, delete: if false;
+      }
+    }
+  }
+}
