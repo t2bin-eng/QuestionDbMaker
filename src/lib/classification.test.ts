@@ -16,7 +16,8 @@ describe("classification", () => {
       "동아시아 역사 기행",
       "세계사",
     ]);
-    expect(data.categories.filter((category) => category.categoryType === "major")).toHaveLength(14);
+    expect(data.categories.filter((category) => category.categoryType === "major")).toHaveLength(16);
+    expect(data.categories.filter((category) => category.categoryType === "middle")).toHaveLength(49);
     expect(data.options.filter((option) => option.kind === "difficulty").map((option) => option.name)).toEqual(["하", "중", "상"]);
     expect(data.options.filter((option) => option.kind === "questionType").map((option) => option.name)).toEqual(["객관식", "서술형"]);
   });
@@ -45,6 +46,46 @@ describe("classification", () => {
     expect(merged.subjects.map((subject) => subject.name)).toContain("세계사");
     expect(merged.categories.some((category) => category.id === "custom-major")).toBe(true);
     expect(merged.categories.some((category) => category.name === "근대 이전 한국사의 이해")).toBe(true);
+    expect(merged.categories.some((category) => category.name === "고대 국가의 성장")).toBe(true);
+  });
+
+  it("migrates legacy default majors and preserves their identifiers", () => {
+    const stored = createDefaultClassificationData();
+    stored.categories = stored.categories
+      .filter((category) => category.categoryType === "major" && !category.id.endsWith("-5") && !category.id.endsWith("-6"))
+      .map((category) => {
+        if (category.id === "category-history-1-2") return { ...category, name: "근대 이전 한국사의 탐구" };
+        if (category.id === "category-world-history-1") return { ...category, name: "지역 세계의 형성" };
+        if (category.id === "category-world-history-2") return { ...category, name: "교역망의 확대" };
+        if (category.id === "category-world-history-3") return { ...category, name: "국민 국가의 형성" };
+        if (category.id === "category-world-history-4") return { ...category, name: "현대 세계의 과제" };
+        return category;
+      });
+
+    const merged = mergeDefaultClassificationData(stored);
+    expect(merged.categories.find((category) => category.id === "category-history-1-2")?.name)
+      .toBe("근대 이전 한국사의 사회·문화와 대외 관계");
+    expect(merged.categories.find((category) => category.id === "category-world-history-1")?.name)
+      .toBe("인류의 출현과 문명의 발생");
+    expect(merged.categories.filter((category) => category.categoryType === "major")).toHaveLength(16);
+    expect(merged.categories.filter((category) => category.categoryType === "middle")).toHaveLength(49);
+  });
+
+  it("places every middle unit under the matching major unit", () => {
+    const data = createDefaultClassificationData();
+    const history = data.subjects.find((subject) => subject.name === "한국사1")!;
+    const tree = flattenCategoryTree(data.categories, history.id);
+    const major = tree.find((category) => category.name === "근대 이전 한국사의 이해")!;
+    const middleNames = tree
+      .filter((category) => category.parentId === major.id)
+      .map((category) => category.name);
+
+    expect(middleNames).toEqual([
+      "고대 국가의 성장",
+      "고려의 통치 체제와 정치 변동",
+      "조선의 성립과 발전",
+      "조선 후기의 새로운 흐름",
+    ]);
   });
 
   it("infers the hierarchy level from the parent", () => {

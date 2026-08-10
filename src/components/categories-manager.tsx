@@ -305,7 +305,7 @@ export function CategoriesManager() {
   async function restoreCurriculumDefaults() {
     await persist(
       mergeDefaultClassificationData(data),
-      "빠진 2022 개정 과목과 대단원을 다시 채웠습니다.",
+      "빠진 2022 개정 과목과 대단원·중단원을 다시 채웠습니다.",
     );
   }
 
