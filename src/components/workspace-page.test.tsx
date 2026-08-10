@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deleteLocalDocument,
@@ -8,6 +8,7 @@ import {
   listLocalDocuments,
   listLocalQuestionCards,
   saveLocalExamSet,
+  saveQuestionClassificationsLocally,
 } from "@/lib/local-file-store";
 import { WorkspacePage } from "./workspace-page";
 
@@ -33,6 +34,7 @@ vi.mock("@/lib/local-file-store", () => ({
   readClassificationLocally: vi.fn().mockResolvedValue(null),
   readSourcePdfLocally: vi.fn().mockRejectedValue(new Error("PDF preview is not loaded in this test.")),
   saveQuestionClassificationLocally: vi.fn(),
+  saveQuestionClassificationsLocally: vi.fn(),
   saveLocalExamSet: vi.fn(),
   saveSourcePdfLocally: vi.fn(),
   selectLocalRootDirectory: vi.fn(),
@@ -207,6 +209,69 @@ describe("WorkspacePage local storage UI", () => {
     expect(deleteLocalQuestionCard).toHaveBeenNthCalledWith(2, "doc-1", "q-2", "doc-1:q-2");
     expect(screen.queryByText("1번 문항")).not.toBeInTheDocument();
     expect(screen.queryByText("2번 문항")).not.toBeInTheDocument();
+  });
+
+  it("applies one classification to all selected question cards", async () => {
+    vi.mocked(listLocalQuestionCards).mockResolvedValueOnce([
+      {
+        id: "doc-1:q-1",
+        documentId: "doc-1",
+        questionKey: "q-1",
+        sourceQuestionNumber: "1",
+        sourceName: "한국사.pdf",
+        updatedAt: "2026-07-25T00:00:00.000Z",
+        classification: null,
+        regions: [{ pageNumber: 1, xRatio: 0.05, yRatio: 0.1, widthRatio: 0.4, heightRatio: 0.5, sortOrder: 0 }],
+      },
+      {
+        id: "doc-1:q-2",
+        documentId: "doc-1",
+        questionKey: "q-2",
+        sourceQuestionNumber: "2",
+        sourceName: "한국사.pdf",
+        updatedAt: "2026-07-25T00:00:00.000Z",
+        classification: null,
+        regions: [{ pageNumber: 1, xRatio: 0.55, yRatio: 0.1, widthRatio: 0.4, heightRatio: 0.5, sortOrder: 0 }],
+      },
+    ]);
+    const savedClassification = {
+      subjectId: "subject-history-1",
+      categoryId: "category-history-1-1",
+      difficultyOptionId: "difficulty-mid",
+      questionTypeOptionId: "type-choice",
+      tagIds: ["tag-source"],
+      updatedAt: "2026-07-25T01:00:00.000Z",
+    };
+    vi.mocked(saveQuestionClassificationsLocally).mockResolvedValueOnce({
+      "doc-1:q-1": savedClassification,
+      "doc-1:q-2": savedClassification,
+    });
+
+    render(<WorkspacePage view="questions" />);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "검색 결과 전체 선택" }));
+    fireEvent.click(screen.getByRole("button", { name: "일괄 분류" }));
+
+    const dialog = screen.getByRole("dialog", { name: "선택 문항 일괄 분류" });
+    expect(dialog).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "일괄 분류 단원" }), { target: { value: "category-history-1-1" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "일괄 분류 난이도" }), { target: { value: "difficulty-mid" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "일괄 분류 문항 유형" }), { target: { value: "type-choice" } });
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "사료 분석" }));
+    fireEvent.click(screen.getByRole("button", { name: "2개 문항에 적용" }));
+
+    await waitFor(() => expect(saveQuestionClassificationsLocally).toHaveBeenCalledWith(
+      ["doc-1:q-1", "doc-1:q-2"],
+      {
+        subjectId: "subject-history-1",
+        categoryId: "category-history-1-1",
+        difficultyOptionId: "difficulty-mid",
+        questionTypeOptionId: "type-choice",
+        tagIds: ["tag-source"],
+      },
+    ));
+    expect(screen.queryByRole("dialog", { name: "선택 문항 일괄 분류" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("2개 문항의 분류를 저장했습니다.");
+    expect(screen.getAllByText("한국사1", { selector: "span" })).toHaveLength(2);
   });
 
   it("removes a question from the current exam without deleting the card", async () => {

@@ -7,7 +7,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api";
 import {
   BookOpen, CircleUserRound, Eye, FileOutput, FileText, Filter, FolderTree,
   FolderOpen, HardDrive, Heart, Home, LayoutGrid, LoaderCircle, Plus, Search,
-  RotateCcw, Settings, Sparkles, Trash2, Upload, X,
+  RotateCcw, Settings, Sparkles, Tags, Trash2, Upload, X,
 } from "lucide-react";
 import { validatePdfFile } from "@/lib/files";
 import {
@@ -24,6 +24,7 @@ import {
   saveGeneratedHwpxLocally,
   saveLocalExamSet,
   saveQuestionClassificationLocally,
+  saveQuestionClassificationsLocally,
   saveSourcePdfLocally,
   selectLocalRootDirectory,
   type LocalDocumentSummary,
@@ -543,7 +544,9 @@ function QuestionCards() {
   const [classificationData, setClassificationData] = useState<ClassificationData>(() => createDefaultClassificationData());
   const [editingCardId, setEditingCardId] = useState("");
   const [classificationDraft, setClassificationDraft] = useState<Omit<QuestionClassification, "updatedAt"> | null>(null);
+  const [bulkClassificationDraft, setBulkClassificationDraft] = useState<Omit<QuestionClassification, "updatedAt"> | null>(null);
   const [savingCardId, setSavingCardId] = useState("");
+  const [savingBulkClassification, setSavingBulkClassification] = useState(false);
   const [deletingCardId, setDeletingCardId] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
@@ -645,6 +648,64 @@ function QuestionCards() {
           questionTypeOptionId: null,
           tagIds: [],
         });
+  }
+
+  function beginBulkClassification() {
+    const selectedCards = cards.filter((card) => selected.includes(card.id));
+    if (!selectedCards.length) return;
+    const firstClassification = selectedCards[0].classification;
+    const sharedClassification = firstClassification && selectedCards.every((card) => {
+      const current = card.classification;
+      return current &&
+        current.subjectId === firstClassification.subjectId &&
+        current.categoryId === firstClassification.categoryId &&
+        current.difficultyOptionId === firstClassification.difficultyOptionId &&
+        current.questionTypeOptionId === firstClassification.questionTypeOptionId &&
+        current.tagIds.length === firstClassification.tagIds.length &&
+        current.tagIds.every((tagId) => firstClassification.tagIds.includes(tagId));
+    });
+
+    setEditingCardId("");
+    setClassificationDraft(null);
+    setMessage("");
+    setBulkClassificationDraft(sharedClassification && firstClassification
+      ? {
+          subjectId: firstClassification.subjectId,
+          categoryId: firstClassification.categoryId,
+          difficultyOptionId: firstClassification.difficultyOptionId,
+          questionTypeOptionId: firstClassification.questionTypeOptionId,
+          tagIds: [...firstClassification.tagIds],
+        }
+      : {
+          subjectId: activeSubjects[0]?.id ?? "",
+          categoryId: null,
+          difficultyOptionId: null,
+          questionTypeOptionId: null,
+          tagIds: [],
+        });
+  }
+
+  async function saveBulkClassification() {
+    if (!bulkClassificationDraft?.subjectId || savingBulkClassification) return;
+    const selectedCardIds = cards
+      .filter((card) => selected.includes(card.id))
+      .map((card) => card.id);
+    if (!selectedCardIds.length) return;
+
+    setSavingBulkClassification(true);
+    setError("");
+    try {
+      const saved = await saveQuestionClassificationsLocally(selectedCardIds, bulkClassificationDraft);
+      setCards((current) => current.map((card) =>
+        saved[card.id] ? { ...card, classification: saved[card.id] } : card,
+      ));
+      setBulkClassificationDraft(null);
+      setMessage(`${selectedCardIds.length}개 문항의 분류를 저장했습니다.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "일괄 분류를 저장하지 못했습니다.");
+    } finally {
+      setSavingBulkClassification(false);
+    }
   }
 
   async function saveCardClassification(cardId: string) {
@@ -835,6 +896,15 @@ function QuestionCards() {
           <span className="text-xs text-[#6d7772]">선택 {selected.length}개</span>
           <button
             type="button"
+            disabled={!selected.length || Boolean(deletingCardId) || savingBulkClassification}
+            onClick={beginBulkClassification}
+            className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-[#bcd7c8] bg-[#eef7f1] px-3 py-2 text-xs font-semibold text-[#1f6b4f] transition hover:bg-[#e2f1e8] disabled:opacity-40"
+          >
+            <Tags size={14} />
+            일괄 분류
+          </button>
+          <button
+            type="button"
             disabled={!selected.length || Boolean(deletingCardId)}
             onClick={() => void confirmDeleteSelectedCards()}
             className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-[#e8c9c4] bg-[#fff7f5] px-3 py-2 text-xs font-semibold text-[#a34b40] transition hover:bg-[#fff0ed] disabled:opacity-40"
@@ -845,6 +915,82 @@ function QuestionCards() {
             선택 삭제
           </button>
         </div>
+      </div>
+    )}
+    {bulkClassificationDraft && (
+      <div className="fixed inset-0 z-50 grid place-items-center bg-[#102019]/45 p-4" role="presentation">
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="bulk-classification-title"
+          className="w-full max-w-xl rounded-2xl bg-white p-5 shadow-2xl"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 id="bulk-classification-title" className="text-lg font-bold text-[#18201d]">선택 문항 일괄 분류</h2>
+              <p className="mt-1 text-xs leading-5 text-[#6d7772]">
+                선택한 {selected.length}개 문항의 기존 분류를 아래 설정으로 교체합니다.
+              </p>
+            </div>
+            <button
+              type="button"
+              aria-label="일괄 분류 닫기"
+              disabled={savingBulkClassification}
+              onClick={() => setBulkClassificationDraft(null)}
+              className="focus-ring rounded-lg p-1.5 text-[#6d7772] hover:bg-[#f1f5f2] disabled:opacity-40"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label className="text-xs font-medium text-[#65716b]">과목
+              <select aria-label="일괄 분류 과목" className="focus-ring mt-1.5 w-full rounded-lg border border-[#dbe2de] bg-white px-3 py-2.5 text-sm text-[#18201d]" value={bulkClassificationDraft.subjectId} onChange={(event) => setBulkClassificationDraft((current) => current ? { ...current, subjectId: event.target.value, categoryId: null } : current)}>
+                {activeSubjects.map((subjectItem) => <option key={subjectItem.id} value={subjectItem.id}>{subjectItem.name}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-medium text-[#65716b]">단원
+              <select aria-label="일괄 분류 단원" className="focus-ring mt-1.5 w-full rounded-lg border border-[#dbe2de] bg-white px-3 py-2.5 text-sm text-[#18201d]" value={bulkClassificationDraft.categoryId ?? ""} onChange={(event) => setBulkClassificationDraft((current) => current ? { ...current, categoryId: event.target.value || null } : current)}>
+                <option value="">미지정</option>
+                {flattenCategoryTree(classificationData.categories, bulkClassificationDraft.subjectId).filter((category) => category.isActive).map((category) => (
+                  <option key={category.id} value={category.id}>{"　".repeat(category.depth)}{category.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs font-medium text-[#65716b]">난이도
+              <select aria-label="일괄 분류 난이도" className="focus-ring mt-1.5 w-full rounded-lg border border-[#dbe2de] bg-white px-3 py-2.5 text-sm text-[#18201d]" value={bulkClassificationDraft.difficultyOptionId ?? ""} onChange={(event) => setBulkClassificationDraft((current) => current ? { ...current, difficultyOptionId: event.target.value || null } : current)}>
+                <option value="">미지정</option>
+                {sortByOrder(classificationData.options.filter((option) => option.kind === "difficulty" && option.isActive)).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-medium text-[#65716b]">문항 유형
+              <select aria-label="일괄 분류 문항 유형" className="focus-ring mt-1.5 w-full rounded-lg border border-[#dbe2de] bg-white px-3 py-2.5 text-sm text-[#18201d]" value={bulkClassificationDraft.questionTypeOptionId ?? ""} onChange={(event) => setBulkClassificationDraft((current) => current ? { ...current, questionTypeOptionId: event.target.value || null } : current)}>
+                <option value="">미지정</option>
+                {sortByOrder(classificationData.options.filter((option) => option.kind === "questionType" && option.isActive)).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+              </select>
+            </label>
+          </div>
+          <fieldset className="mt-4">
+            <legend className="text-xs font-medium text-[#65716b]">태그</legend>
+            <div className="mt-2 flex flex-wrap gap-3 rounded-xl border border-[#e3e8e4] bg-[#f8faf9] p-3">
+              {sortByOrder(classificationData.tags.filter((tag) => tag.isActive)).map((tag) => (
+                <label key={tag.id} className="flex items-center gap-1.5 text-xs text-[#34423c]">
+                  <input type="checkbox" className="accent-[#1f6b4f]" checked={bulkClassificationDraft.tagIds.includes(tag.id)} onChange={(event) => setBulkClassificationDraft((current) => current ? {
+                    ...current,
+                    tagIds: event.target.checked ? [...current.tagIds, tag.id] : current.tagIds.filter((id) => id !== tag.id),
+                  } : current)} />
+                  {tag.name}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <div className="mt-5 flex justify-end gap-2">
+            <button type="button" disabled={savingBulkClassification} onClick={() => setBulkClassificationDraft(null)} className="focus-ring rounded-lg border border-[#dbe2de] px-4 py-2.5 text-sm font-semibold text-[#53615a] hover:bg-[#f5f7f6] disabled:opacity-40">취소</button>
+            <button type="button" disabled={savingBulkClassification || !bulkClassificationDraft.subjectId} onClick={() => void saveBulkClassification()} className="focus-ring inline-flex items-center gap-2 rounded-lg bg-[#1f6b4f] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#195b43] disabled:opacity-50">
+              {savingBulkClassification && <LoaderCircle className="animate-spin" size={15} />}
+              {selected.length}개 문항에 적용
+            </button>
+          </div>
+        </section>
       </div>
     )}
     {message && <p role="status" className="mb-3 rounded-xl bg-[#eef5f0] px-4 py-2 text-xs font-medium text-[#285243]">{message}</p>}

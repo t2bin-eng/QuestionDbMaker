@@ -537,6 +537,17 @@ export async function saveQuestionClassificationLocally(
   questionCardId: string,
   classification: Omit<QuestionClassification, "updatedAt">,
 ) {
+  const saved = await saveQuestionClassificationsLocally([questionCardId], classification);
+  return saved[questionCardId];
+}
+
+export async function saveQuestionClassificationsLocally(
+  questionCardIds: string[],
+  classification: Omit<QuestionClassification, "updatedAt">,
+) {
+  const uniqueQuestionCardIds = Array.from(new Set(questionCardIds.filter(Boolean)));
+  if (!uniqueQuestionCardIds.length) return {};
+
   const root = await getWritableRootDirectory();
   const directory = await ensureDirectory(root, ["metadata"]);
   const stored = await readOptionalJson<StoredQuestionClassifications>(
@@ -544,16 +555,23 @@ export async function saveQuestionClassificationLocally(
     "question-classifications.json",
   );
   const updatedAt = new Date().toISOString();
-  const value: QuestionClassification = { ...classification, updatedAt };
+  const values = Object.fromEntries(uniqueQuestionCardIds.map((questionCardId) => [
+    questionCardId,
+    {
+      ...classification,
+      tagIds: [...classification.tagIds],
+      updatedAt,
+    } satisfies QuestionClassification,
+  ]));
   await writeJsonFile(directory, "question-classifications.json", {
     version: 1,
     items: {
       ...(stored?.version === 1 ? stored.items : {}),
-      [questionCardId]: value,
+      ...values,
     },
     updatedAt,
   } satisfies StoredQuestionClassifications);
-  return value;
+  return values;
 }
 
 export async function saveReviewDraftLocally(documentId: string, draft: unknown) {
