@@ -1,7 +1,7 @@
 import type { EditableRegion } from "./question-detection";
 import type { PdfInspectionSummary } from "./pdf-inspector-client";
 
-export const QUESTION_DETECTION_ALGORITHM_VERSION = "2026-08-layout-v2";
+export const QUESTION_DETECTION_ALGORITHM_VERSION = "2026-08-layout-v3";
 
 export interface TrainingRegion {
   id: string;
@@ -100,7 +100,7 @@ export function buildReviewTrainingSample({
     automaticRegions: automaticRegions.map(toTrainingRegion),
     correctedRegions: correctedRegions.map(toTrainingRegion),
     corrections: { added, deleted, movedOrResized, reviewed },
-    usableForTraining: reviewed > 0,
+    usableForTraining: correctedRegions.length > 0 && reviewed === correctedRegions.length,
     updatedAt,
   };
 }

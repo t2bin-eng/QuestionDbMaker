@@ -111,6 +111,100 @@ describe("question detection", () => {
     expect(regions[0].xRatio + regions[0].widthRatio).toBeLessThan(0.52);
   });
 
+  it("keeps the dominant two-column width on a sparse final page", () => {
+    const twoColumnPage = (pageNumber: number, leftNumber: number, rightNumber: number) => ({
+      pageNumber,
+      pageWidth: 600,
+      pageHeight: 800,
+      fragments: [
+        { text: `${leftNumber}. 옳은 것은?`, x: 25, y: 120, width: 100, height: 10 },
+        { text: "① 선택지", x: 25, y: 220, width: 60, height: 9 },
+        { text: `${rightNumber}. 적절한 것은?`, x: 320, y: 130, width: 110, height: 10 },
+        { text: "① 선택지", x: 320, y: 230, width: 60, height: 9 },
+      ],
+    });
+    const regions = detectDocumentQuestionRegions([
+      twoColumnPage(1, 1, 2),
+      twoColumnPage(2, 3, 4),
+      {
+        pageNumber: 3,
+        pageWidth: 600,
+        pageHeight: 800,
+        fragments: [
+          { text: "5. 옳은 것은?", x: 25, y: 120, width: 100, height: 10 },
+          { text: "① 선택지", x: 25, y: 220, width: 60, height: 9 },
+          { text: "6. 적절한 것은?", x: 25, y: 430, width: 110, height: 10 },
+          { text: "① 선택지", x: 25, y: 530, width: 60, height: 9 },
+        ],
+      },
+    ]);
+
+    const finalPageRegions = regions.filter((region) => region.pageNumber === 3 && region.sortOrder === 0);
+    expect(finalPageRegions).toHaveLength(2);
+    expect(finalPageRegions.every((region) => region.xRatio + region.widthRatio < 0.52)).toBe(true);
+    expect(finalPageRegions.every((region) => region.detectionReasons?.includes("문서 2단 레이아웃 유지"))).toBe(true);
+  });
+
+  it("starts a first-page continuation below the first question header line", () => {
+    const regions = detectDocumentQuestionRegions([{
+      pageNumber: 1,
+      pageWidth: 600,
+      pageHeight: 800,
+      fragments: [
+        { text: "학교 시험 안내", x: 320, y: 20, width: 100, height: 10 },
+        { text: "1. 옳은 것은?", x: 25, y: 116, width: 100, height: 10 },
+        { text: "① 선택지", x: 25, y: 220, width: 60, height: 9 },
+        { text: "2. 다음 자료를 보시오", x: 25, y: 637, width: 130, height: 10 },
+        { text: "이어지는 자료", x: 320, y: 112, width: 90, height: 10 },
+        { text: "① 선택지", x: 320, y: 240, width: 60, height: 9 },
+        { text: "3. 적절한 것은?", x: 320, y: 576, width: 110, height: 10 },
+      ],
+    }]);
+
+    const continuation = regions.find((region) => region.questionNumber === "2" && region.sortOrder === 1);
+    expect(continuation).toBeDefined();
+    expect(continuation!.yRatio).toBeGreaterThanOrEqual(0.12);
+    expect(continuation!.yRatio).toBeLessThan(0.15);
+    expect(continuation!.detectionReasons).toContain("첫 문항 시작선 적용");
+  });
+
+  it("lowers confidence for a full-width question inside a two-column document", () => {
+    const regions = detectDocumentQuestionRegions([
+      {
+        pageNumber: 1,
+        pageWidth: 600,
+        pageHeight: 800,
+        fragments: [
+          { text: "1. 옳은 것은?", x: 25, y: 120, width: 100, height: 10 },
+          { text: "2. 적절한 것은?", x: 320, y: 130, width: 110, height: 10 },
+        ],
+      },
+      {
+        pageNumber: 2,
+        pageWidth: 600,
+        pageHeight: 800,
+        fragments: [
+          { text: "3. 옳은 것은?", x: 25, y: 120, width: 100, height: 10 },
+          { text: "① 선택지", x: 25, y: 220, width: 60, height: 9 },
+        ],
+      },
+      {
+        pageNumber: 3,
+        pageWidth: 600,
+        pageHeight: 800,
+        fragments: [
+          { text: "4. 옳은 것은?", x: 25, y: 120, width: 100, height: 10 },
+          { text: "5. 적절한 것은?", x: 320, y: 130, width: 110, height: 10 },
+        ],
+      },
+    ]);
+
+    const middlePageRegion = regions.find((region) => region.questionNumber === "3" && region.sortOrder === 0);
+    expect(middlePageRegion).toMatchObject({ status: "needs_review" });
+    expect(middlePageRegion!.detectionConfidence).toBeLessThanOrEqual(0.55);
+    expect(middlePageRegion!.detectionReasons).toContain("문서 2단 레이아웃과 영역 너비 불일치");
+  });
+
   it("does not treat numbered list items inside a question as new questions", () => {
     const regions = detectQuestionRegions([
       { text: "7.", x: 25, y: 480, width: 12, height: 10 },

@@ -38,4 +38,20 @@ describe("review training sample", () => {
     expect(sample.usableForTraining).toBe(true);
     expect(sample.source.relativePdfPath).toBe("documents/doc-1/source.pdf");
   });
+
+  it("excludes partially reviewed documents from training exports", () => {
+    const sample = buildReviewTrainingSample({
+      documentId: "doc-1",
+      fileName: "시험지.pdf",
+      pageCount: 1,
+      automaticRegions: [region(), region({ id: "auto-2", questionKey: "q-2" })],
+      correctedRegions: [
+        region({ status: "reviewed" }),
+        region({ id: "auto-2", questionKey: "q-2", status: "needs_review" }),
+      ],
+      inspection: null,
+    });
+
+    expect(sample.usableForTraining).toBe(false);
+  });
 });

@@ -48,6 +48,11 @@ interface TextLine {
   height: number;
 }
 
+interface ForcedColumnLayout {
+  twoColumns: true;
+  split: number;
+}
+
 const QUESTION_MARKER = /^\s*(\d{1,3})\s*[.)](?!\d)(?:\s|$)/;
 const QUESTION_CUE = /[?？]$|\[(?:\d+)\s*점\]|(?:옳은|옳지 않은|적절한|적절하지 않은|고르시오|것은)/;
 const CHOICE_CUE = /^[①②③④⑤⑥]/;
@@ -306,6 +311,7 @@ function analyzePageLayout(
   page: PdfPageTextContent,
   rawLines = groupTextFragmentsIntoLines(page.fragments, page.pageWidth),
   repeatedEdgeLines = new Set<string>(),
+  forcedColumnLayout?: ForcedColumnLayout,
 ) {
   const lines = rawLines.filter((line) => {
     const signature = edgeLineSignature(line, page.pageWidth, page.pageHeight);
@@ -316,7 +322,9 @@ function analyzePageLayout(
     .filter((candidate): candidate is MarkerCandidate => Boolean(candidate))
     .filter(({ line }) => line.y > page.pageHeight * 0.035 && line.y < page.pageHeight * 0.96);
   const markers = removeNestedNumberedListMarkers(rawMarkers, page.pageWidth, page.pageHeight);
-  const { twoColumns, split } = inferPageColumns(lines, markers, page.pageWidth, page.pageHeight);
+  const inferredColumns = inferPageColumns(lines, markers, page.pageWidth, page.pageHeight);
+  const twoColumns = forcedColumnLayout?.twoColumns ?? inferredColumns.twoColumns;
+  const split = forcedColumnLayout?.split ?? inferredColumns.split;
   const columnOf = (line: Pick<TextLine, "x">) => twoColumns && line.x >= split ? 1 : 0;
   const contentBottom = Math.min(
     findContentBottom(rawLines, page.pageHeight),
@@ -324,10 +332,30 @@ function analyzePageLayout(
   );
   const columns = twoColumns ? [0, 1] : [0];
   const visuals = page.visuals ?? [];
-  const top = repeatedHeaderBottom(rawLines, page.pageWidth, page.pageHeight, repeatedEdgeLines);
+  const headerBottom = repeatedHeaderBottom(rawLines, page.pageWidth, page.pageHeight, repeatedEdgeLines);
+  const earlyFirstQuestionTop = page.pageNumber === 1
+    ? markers
+        .map(({ line }) => line.y - 8)
+        .filter((markerTop) => markerTop > headerBottom + 4 && markerTop < page.pageHeight * 0.24)
+        .sort((a, b) => a - b)[0]
+    : undefined;
+  const top = Math.max(headerBottom, earlyFirstQuestionTop ?? headerBottom);
   const contentTop = new Map(columns.map((column) => [column, top]));
 
-  return { ...page, visuals, lines, markers, twoColumns, split, columnOf, contentBottom, contentTop, columns };
+  return {
+    ...page,
+    visuals,
+    lines,
+    markers,
+    twoColumns,
+    split,
+    columnOf,
+    contentBottom,
+    contentTop,
+    columns,
+    forcedTwoColumn: Boolean(forcedColumnLayout),
+    firstQuestionTopGuarded: earlyFirstQuestionTop !== undefined,
+  };
 }
 
 export function detectQuestionRegions(
@@ -390,9 +418,33 @@ function regionsFromAnalyzedPage(page: ReturnType<typeof analyzePageLayout>): Ed
       sortOrder: 0,
       status: "auto_detected",
       detectionConfidence: clamp(0.35 + score * 0.08, 0, 0.98),
-      detectionReasons: ["문항 번호", ...(QUESTION_CUE.test(line.text) ? ["문제 문장"] : [])],
+      detectionReasons: [
+        "문항 번호",
+        ...(QUESTION_CUE.test(line.text) ? ["문제 문장"] : []),
+        ...(page.forcedTwoColumn ? ["문서 2단 레이아웃 유지"] : []),
+      ],
     };
   });
+}
+
+function median(values: number[]) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function inferDominantDocumentColumnLayout(
+  analyses: Array<ReturnType<typeof analyzePageLayout>>,
+) {
+  const pagesWithQuestions = analyses.filter((page) => page.markers.length > 0);
+  const twoColumnPages = pagesWithQuestions.filter((page) => page.twoColumns);
+  const minimumSupportingPages = Math.max(2, Math.ceil(pagesWithQuestions.length * 0.5));
+  if (twoColumnPages.length < minimumSupportingPages) return null;
+  const splitRatio = median(twoColumnPages.map((page) => page.split / page.pageWidth));
+  return splitRatio === null ? null : { splitRatio };
 }
 
 export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
@@ -403,9 +455,29 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
     lines: groupTextFragmentsIntoLines(page.fragments, page.pageWidth),
   }));
   const repeatedEdgeLines = findRepeatedEdgeLineSignatures(rawLayouts);
-  const analyses = sortedPages.map((page, index) =>
+  const initialAnalyses = sortedPages.map((page, index) =>
     analyzePageLayout(page, rawLayouts[index].lines, repeatedEdgeLines),
   );
+  const dominantColumnLayout = inferDominantDocumentColumnLayout(initialAnalyses);
+  const lastPageNumber = sortedPages.at(-1)?.pageNumber;
+  const analyses = initialAnalyses.map((analysis, index) => {
+    if (
+      !dominantColumnLayout ||
+      analysis.twoColumns ||
+      analysis.pageNumber !== lastPageNumber ||
+      !analysis.markers.length
+    ) return analysis;
+
+    const split = dominantColumnLayout.splitRatio * analysis.pageWidth;
+    const markerColumns = new Set(analysis.markers.map(({ line }) => line.x >= split ? 1 : 0));
+    if (markerColumns.size !== 1) return analysis;
+    return analyzePageLayout(
+      sortedPages[index],
+      rawLayouts[index].lines,
+      repeatedEdgeLines,
+      { twoColumns: true, split },
+    );
+  });
   const baseRegions = analyses.flatMap(regionsFromAnalyzedPage);
   const orderedBaseRegions = analyses.flatMap((page) =>
     page.columns.flatMap((column) =>
@@ -492,6 +564,10 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
           widthRatio: clamp((right - left - 10) / page.pageWidth, 0.04),
           heightRatio: clamp((bottom - top) / page.pageHeight, 0.025),
           sortOrder: continuationOrder,
+          detectionReasons: [
+            ...(source.detectionReasons ?? []),
+            ...(page.firstQuestionTopGuarded ? ["첫 문항 시작선 적용"] : []),
+          ],
         });
         continuationOrder += 1;
         addedContinuation = true;
@@ -542,6 +618,24 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
           .filter((region) => region.questionKey === firstSegments[index].questionKey)
           .forEach((region) => { region.status = "needs_review"; });
       }
+    }
+  }
+
+  if (dominantColumnLayout) {
+    for (const region of firstSegments) {
+      const page = analyses.find((candidate) => candidate.pageNumber === region.pageNumber);
+      if (!page || page.twoColumns || region.widthRatio < 0.7) continue;
+      region.detectionConfidence = Math.min(
+        0.55,
+        clamp((region.detectionConfidence ?? 0.5) - 0.35),
+      );
+      region.detectionReasons = [
+        ...(region.detectionReasons ?? []),
+        "문서 2단 레이아웃과 영역 너비 불일치",
+      ];
+      sortedRegions
+        .filter((candidate) => candidate.questionKey === region.questionKey)
+        .forEach((candidate) => { candidate.status = "needs_review"; });
     }
   }
 
