@@ -132,6 +132,60 @@ describe("WorkspacePage local storage UI", () => {
     expect(pushMock).toHaveBeenCalledWith("/exam-sets");
   });
 
+  it("filters question cards by multiple categories and difficulties", async () => {
+    const categoryIds = [
+      "category-history-1-1",
+      "category-history-1-2",
+      "category-history-1-3",
+      "category-history-1-1",
+    ];
+    const difficultyIds = ["difficulty-low", "difficulty-mid", "difficulty-high", "difficulty-high"];
+    vi.mocked(listLocalQuestionCards).mockResolvedValueOnce(categoryIds.map((categoryId, index) => ({
+      id: `doc-1:q-${index + 1}`,
+      documentId: "doc-1",
+      questionKey: `q-${index + 1}`,
+      sourceQuestionNumber: String(index + 1),
+      sourceName: "한국사.pdf",
+      updatedAt: "2026-07-25T00:00:00.000Z",
+      classification: {
+        subjectId: "subject-history-1",
+        categoryId,
+        difficultyOptionId: difficultyIds[index],
+        questionTypeOptionId: "type-choice",
+        tagIds: [],
+        updatedAt: "2026-07-25T00:00:00.000Z",
+      },
+      regions: [{ pageNumber: 1, xRatio: 0.05, yRatio: 0.1, widthRatio: 0.4, heightRatio: 0.5, sortOrder: 0 }],
+    })));
+
+    render(<WorkspacePage view="questions" />);
+    await screen.findByText("1번 문항");
+    fireEvent.change(screen.getByRole("combobox", { name: "과목 필터" }), { target: { value: "subject-history-1" } });
+
+    const categoryFilter = screen.getByRole("group", { name: "단원 필터" });
+    fireEvent.click(within(categoryFilter).getByText("전체 단원"));
+    fireEvent.click(within(categoryFilter).getByRole("checkbox", { name: "근대 이전 한국사의 이해" }));
+    fireEvent.click(within(categoryFilter).getByRole("checkbox", { name: "근대 국가 수립의 노력" }));
+
+    expect(screen.getByText("1번 문항")).toBeInTheDocument();
+    expect(screen.queryByText("2번 문항")).not.toBeInTheDocument();
+    expect(screen.getByText("3번 문항")).toBeInTheDocument();
+    expect(screen.getByText("4번 문항")).toBeInTheDocument();
+
+    const difficultyFilter = screen.getByRole("group", { name: "난이도 필터" });
+    fireEvent.click(within(difficultyFilter).getByText("전체 난이도"));
+    fireEvent.click(within(difficultyFilter).getByRole("checkbox", { name: "하" }));
+
+    expect(screen.getByText("1번 문항")).toBeInTheDocument();
+    expect(screen.queryByText("3번 문항")).not.toBeInTheDocument();
+    expect(screen.queryByText("4번 문항")).not.toBeInTheDocument();
+
+    fireEvent.click(within(difficultyFilter).getByRole("checkbox", { name: "상" }));
+    expect(screen.getByText("1번 문항")).toBeInTheDocument();
+    expect(screen.getByText("3번 문항")).toBeInTheDocument();
+    expect(screen.getByText("4번 문항")).toBeInTheDocument();
+  });
+
   it("deletes a question card without deleting its source document", async () => {
     vi.mocked(listLocalQuestionCards).mockResolvedValueOnce([{
       id: "doc-1:q-1",

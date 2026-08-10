@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api";
 import {
-  BookOpen, CircleUserRound, Eye, FileOutput, FileText, Filter, FolderTree,
+  BookOpen, ChevronDown, CircleUserRound, Eye, FileOutput, FileText, Filter, FolderTree,
   FolderOpen, HardDrive, Heart, Home, LayoutGrid, LoaderCircle, Plus, Search,
   RotateCcw, Settings, Sparkles, Tags, Trash2, Upload, X,
 } from "lucide-react";
@@ -47,6 +47,62 @@ import {
 
 type View = "dashboard" | "documents" | "questions" | "exam-sets" | "categories" | "settings";
 const EXAM_SELECTION_KEY = "question-card-studio:exam-selection";
+
+interface MultiSelectFilterOption {
+  id: string;
+  label: string;
+}
+
+function MultiSelectFilter({
+  label,
+  options,
+  selectedIds,
+  onChange,
+}: {
+  label: string;
+  options: MultiSelectFilterOption[];
+  selectedIds: string[];
+  onChange: (selectedIds: string[]) => void;
+}) {
+  const selectedLabels = options
+    .filter((option) => selectedIds.includes(option.id))
+    .map((option) => option.label.trim());
+  const summary = selectedLabels.length === 0
+    ? `전체 ${label}`
+    : selectedLabels.length === 1
+      ? selectedLabels[0]
+      : `${label} ${selectedLabels.length}개 선택`;
+
+  return (
+    <details role="group" aria-label={`${label} 필터`} className="group relative min-w-0">
+      <summary className="focus-ring flex cursor-pointer list-none items-center justify-between gap-2 rounded-xl border border-[#e3e8e4] bg-white px-3 py-2 text-xs text-[#18201d] marker:hidden">
+        <span className="truncate">{summary}</span>
+        <ChevronDown className="shrink-0 transition group-open:rotate-180" size={14} />
+      </summary>
+      <div className="absolute left-0 top-[calc(100%+6px)] z-30 w-full min-w-56 rounded-xl border border-[#dfe6e2] bg-white p-2 shadow-xl">
+        <div className="flex items-center justify-between gap-2 border-b border-[#edf0ee] px-2 pb-2">
+          <b className="text-xs">{label} 복수 선택</b>
+          <button type="button" disabled={!selectedIds.length} onClick={() => onChange([])} className="focus-ring rounded-md px-1.5 py-1 text-[11px] font-semibold text-[#1f6b4f] hover:bg-[#eef5f0] disabled:opacity-35">모두 해제</button>
+        </div>
+        <div className="mt-1 max-h-60 space-y-0.5 overflow-y-auto">
+          {options.length ? options.map((option) => (
+            <label key={option.id} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 text-xs leading-4 text-[#34423c] hover:bg-[#f3f7f4]">
+              <input
+                type="checkbox"
+                className="mt-0.5 shrink-0 accent-[#1f6b4f]"
+                checked={selectedIds.includes(option.id)}
+                onChange={(event) => onChange(event.target.checked
+                  ? [...selectedIds, option.id]
+                  : selectedIds.filter((id) => id !== option.id))}
+              />
+              <span>{option.label}</span>
+            </label>
+          )) : <p className="px-2 py-3 text-xs text-[#7a8580]">선택 가능한 항목이 없습니다.</p>}
+        </div>
+      </div>
+    </details>
+  );
+}
 
 const nav = [
   { id: "dashboard", label: "대시보드", href: "/dashboard", icon: Home },
@@ -534,8 +590,8 @@ function QuestionCards() {
   const router = useRouter();
   const [term, setTerm] = useState("");
   const [subjectFilter, setSubjectFilter] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState("");
-  const [difficultyFilter, setDifficultyFilter] = useState("");
+  const [categoryFilters, setCategoryFilters] = useState<string[]>([]);
+  const [difficultyFilters, setDifficultyFilters] = useState<string[]>([]);
   const [questionTypeFilter, setQuestionTypeFilter] = useState("");
   const [tagFilters, setTagFilters] = useState<string[]>([]);
   const [classificationStatusFilter, setClassificationStatusFilter] = useState<"" | "classified" | "unclassified">("");
@@ -585,6 +641,9 @@ function QuestionCards() {
           .filter((category) => category.isActive)
           .map((category) => ({ ...category, subjectName: subjectItem.name })),
       );
+  const difficultyFilterOptions = sortByOrder(
+    classificationData.options.filter((option) => option.kind === "difficulty" && option.isActive),
+  );
 
   function classificationLabels(card: LocalQuestionCardSummary) {
     const value = card.classification;
@@ -604,8 +663,8 @@ function QuestionCards() {
   const normalizedTerm = term.trim().toLocaleLowerCase();
   const filtered = cards.filter((card) => {
     if (subjectFilter && card.classification?.subjectId !== subjectFilter) return false;
-    if (categoryFilter && card.classification?.categoryId !== categoryFilter) return false;
-    if (difficultyFilter && card.classification?.difficultyOptionId !== difficultyFilter) return false;
+    if (categoryFilters.length && (!card.classification?.categoryId || !categoryFilters.includes(card.classification.categoryId))) return false;
+    if (difficultyFilters.length && (!card.classification?.difficultyOptionId || !difficultyFilters.includes(card.classification.difficultyOptionId))) return false;
     if (questionTypeFilter && card.classification?.questionTypeOptionId !== questionTypeFilter) return false;
     if (tagFilters.length && !tagFilters.every((tagId) => card.classification?.tagIds.includes(tagId))) return false;
     if (classificationStatusFilter === "classified" && !card.classification) return false;
@@ -622,8 +681,8 @@ function QuestionCards() {
   function resetClassificationFilters() {
     setTerm("");
     setSubjectFilter("");
-    setCategoryFilter("");
-    setDifficultyFilter("");
+    setCategoryFilters([]);
+    setDifficultyFilters([]);
     setQuestionTypeFilter("");
     setTagFilters([]);
     setClassificationStatusFilter("");
@@ -834,7 +893,7 @@ function QuestionCards() {
       </label>
       <select aria-label="과목 필터" className="focus-ring rounded-xl border border-[#e3e8e4] bg-white px-3 text-sm" value={subjectFilter} onChange={(event) => {
         setSubjectFilter(event.target.value);
-        setCategoryFilter("");
+        setCategoryFilters([]);
       }}>
         <option value="">전체 과목</option>
         {activeSubjects.map((subjectItem) => <option key={subjectItem.id} value={subjectItem.id}>{subjectItem.name}</option>)}
@@ -847,18 +906,21 @@ function QuestionCards() {
         <button className="focus-ring inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-[#607068] hover:bg-[#f1f5f2]" onClick={resetClassificationFilters}><RotateCcw size={13} />초기화</button>
       </div>
       <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-        <select aria-label="단원 필터" className="focus-ring rounded-xl border border-[#e3e8e4] bg-white px-3 py-2 text-xs" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
-          <option value="">전체 단원</option>
-          {categoryFilterOptions.map((category) => (
-            <option key={category.id} value={category.id}>
-              {"subjectName" in category ? `${category.subjectName} · ` : ""}{"　".repeat(category.depth)}{category.name}
-            </option>
-          ))}
-        </select>
-        <select aria-label="난이도 필터" className="focus-ring rounded-xl border border-[#e3e8e4] bg-white px-3 py-2 text-xs" value={difficultyFilter} onChange={(event) => setDifficultyFilter(event.target.value)}>
-          <option value="">전체 난이도</option>
-          {sortByOrder(classificationData.options.filter((option) => option.kind === "difficulty" && option.isActive)).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
-        </select>
+        <MultiSelectFilter
+          label="단원"
+          selectedIds={categoryFilters}
+          onChange={setCategoryFilters}
+          options={categoryFilterOptions.map((category) => ({
+            id: category.id,
+            label: `${"subjectName" in category ? `${category.subjectName} · ` : ""}${"　".repeat(category.depth)}${category.name}`,
+          }))}
+        />
+        <MultiSelectFilter
+          label="난이도"
+          selectedIds={difficultyFilters}
+          onChange={setDifficultyFilters}
+          options={difficultyFilterOptions.map((option) => ({ id: option.id, label: option.name }))}
+        />
         <select aria-label="문항 유형 필터" className="focus-ring rounded-xl border border-[#e3e8e4] bg-white px-3 py-2 text-xs" value={questionTypeFilter} onChange={(event) => setQuestionTypeFilter(event.target.value)}>
           <option value="">전체 문항 유형</option>
           {sortByOrder(classificationData.options.filter((option) => option.kind === "questionType" && option.isActive)).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
