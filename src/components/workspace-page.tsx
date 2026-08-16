@@ -5,13 +5,15 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api";
 import {
-  BookOpen, ChevronDown, CircleUserRound, Eye, FileOutput, FileText, Filter, FolderTree,
+  BookOpen, ChevronDown, CircleUserRound, Download, Eye, FileOutput, FileText, Filter, FolderTree,
   FolderOpen, HardDrive, Heart, Home, LayoutGrid, LoaderCircle, Plus, Search,
   RotateCcw, Settings, Sparkles, Tags, Trash2, Upload, X,
 } from "lucide-react";
 import { validatePdfFile } from "@/lib/files";
 import {
   getLocalFolderState,
+  exportLocalDatabaseBackup,
+  importLocalDatabaseBackup,
   deleteLocalDocument,
   deleteLocalExamSet,
   deleteLocalQuestionCard,
@@ -38,6 +40,7 @@ import { CategoriesManager } from "@/components/categories-manager";
 import { createExamPdf, type ExamPdfQuestion } from "@/lib/exam-pdf";
 import {
   createDefaultClassificationData,
+  CATEGORY_TYPE_LABELS,
   mergeDefaultClassificationData,
   sortByOrder,
   flattenCategoryTree,
@@ -51,6 +54,10 @@ const EXAM_SELECTION_KEY = "question-card-studio:exam-selection";
 interface MultiSelectFilterOption {
   id: string;
   label: string;
+  subjectName?: string;
+  categoryType?: "major" | "middle" | "minor" | "topic";
+  depth?: number;
+  count?: number;
 }
 
 function MultiSelectFilter({
@@ -86,16 +93,32 @@ function MultiSelectFilter({
         </div>
         <div className="mt-1 max-h-60 space-y-0.5 overflow-y-auto">
           {options.length ? options.map((option) => (
-            <label key={option.id} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 text-xs leading-4 text-[#34423c] hover:bg-[#f3f7f4]">
+            <label
+              key={option.id}
+              className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 text-xs leading-4 text-[#34423c] hover:bg-[#f3f7f4]"
+              style={{ paddingLeft: `${8 + (option.depth ?? 0) * 12}px` }}
+            >
               <input
                 type="checkbox"
+                aria-label={option.label}
                 className="mt-0.5 shrink-0 accent-[#1f6b4f]"
                 checked={selectedIds.includes(option.id)}
                 onChange={(event) => onChange(event.target.checked
                   ? [...selectedIds, option.id]
                   : selectedIds.filter((id) => id !== option.id))}
               />
-              <span>{option.label}</span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  {option.categoryType && (
+                    <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${option.categoryType === "major" ? "bg-[#dcefe5] text-[#18553f]" : "bg-[#edf1f7] text-[#4e6079]"}`}>
+                      {CATEGORY_TYPE_LABELS[option.categoryType]}
+                    </span>
+                  )}
+                  <span className={option.categoryType === "major" ? "font-semibold text-[#20372e]" : "text-[#46534d]"}>{option.label}</span>
+                  {typeof option.count === "number" && <span className="ml-auto shrink-0 font-mono text-[11px] text-[#738079]">({option.count})</span>}
+                </span>
+                {option.subjectName && <span className="mt-0.5 block text-[10px] text-[#8a948f]">{option.subjectName}</span>}
+              </span>
             </label>
           )) : <p className="px-2 py-3 text-xs text-[#7a8580]">선택 가능한 항목이 없습니다.</p>}
         </div>
@@ -634,6 +657,39 @@ function QuestionCards() {
     () => sortByOrder(classificationData.subjects.filter((subjectItem) => subjectItem.isActive)),
     [classificationData],
   );
+  const categoryIdsByRoot = useMemo(() => {
+    const children = new Map<string | null, string[]>();
+    classificationData.categories.forEach((category) => {
+      const current = children.get(category.parentId) ?? [];
+      current.push(category.id);
+      children.set(category.parentId, current);
+    });
+    const result = new Map<string, Set<string>>();
+    const collect = (categoryId: string): Set<string> => {
+      const cached = result.get(categoryId);
+      if (cached) return cached;
+      const ids = new Set([categoryId]);
+      (children.get(categoryId) ?? []).forEach((childId) => {
+        collect(childId).forEach((id) => ids.add(id));
+      });
+      result.set(categoryId, ids);
+      return ids;
+    };
+    classificationData.categories.forEach((category) => collect(category.id));
+    return result;
+  }, [classificationData.categories]);
+  const categoryQuestionCounts = useMemo(() => {
+    const directCounts = new Map<string, number>();
+    cards.forEach((card) => {
+      const categoryId = card.classification?.categoryId;
+      if (categoryId) directCounts.set(categoryId, (directCounts.get(categoryId) ?? 0) + 1);
+    });
+    return new Map(classificationData.categories.map((category) => [
+      category.id,
+      Array.from(categoryIdsByRoot.get(category.id) ?? [category.id])
+        .reduce((sum, id) => sum + (directCounts.get(id) ?? 0), 0),
+    ]));
+  }, [cards, categoryIdsByRoot, classificationData.categories]);
   const categoryFilterOptions = subjectFilter
     ? flattenCategoryTree(classificationData.categories, subjectFilter).filter((category) => category.isActive)
     : activeSubjects.flatMap((subjectItem) =>
@@ -661,9 +717,12 @@ function QuestionCards() {
   }
 
   const normalizedTerm = term.trim().toLocaleLowerCase();
+  const selectedCategoryIds = new Set(
+    categoryFilters.flatMap((categoryId) => Array.from(categoryIdsByRoot.get(categoryId) ?? [categoryId])),
+  );
   const filtered = cards.filter((card) => {
     if (subjectFilter && card.classification?.subjectId !== subjectFilter) return false;
-    if (categoryFilters.length && (!card.classification?.categoryId || !categoryFilters.includes(card.classification.categoryId))) return false;
+    if (categoryFilters.length && (!card.classification?.categoryId || !selectedCategoryIds.has(card.classification.categoryId))) return false;
     if (difficultyFilters.length && (!card.classification?.difficultyOptionId || !difficultyFilters.includes(card.classification.difficultyOptionId))) return false;
     if (questionTypeFilter && card.classification?.questionTypeOptionId !== questionTypeFilter) return false;
     if (tagFilters.length && !tagFilters.every((tagId) => card.classification?.tagIds.includes(tagId))) return false;
@@ -912,7 +971,13 @@ function QuestionCards() {
           onChange={setCategoryFilters}
           options={categoryFilterOptions.map((category) => ({
             id: category.id,
-            label: `${"subjectName" in category ? `${category.subjectName} · ` : ""}${"　".repeat(category.depth)}${category.name}`,
+            label: category.name,
+            subjectName: "subjectName" in category && typeof category.subjectName === "string"
+              ? category.subjectName
+              : undefined,
+            categoryType: category.categoryType,
+            depth: category.depth,
+            count: categoryQuestionCounts.get(category.id) ?? 0,
           }))}
         />
         <MultiSelectFilter
@@ -1676,7 +1741,10 @@ function Categories() {
 function LocalStorageSettings() {
   const [folder, setFolder] = useState<LocalFolderState | null>(null);
   const [message, setMessage] = useState("");
+  const [transferMessage, setTransferMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [transferOperation, setTransferOperation] = useState<"export" | "import" | null>(null);
+  const backupInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void getLocalFolderState().then(setFolder);
@@ -1696,6 +1764,47 @@ function LocalStorageSettings() {
       }
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function exportDatabase() {
+    setTransferOperation("export");
+    setTransferMessage("");
+    try {
+      const result = await exportLocalDatabaseBackup();
+      const url = URL.createObjectURL(result.blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = result.fileName;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setTransferMessage(`${result.fileCount}개 DB 파일을 백업했습니다.`);
+    } catch (error) {
+      setTransferMessage(error instanceof Error ? error.message : "문항 DB를 내보내지 못했습니다.");
+    } finally {
+      setTransferOperation(null);
+    }
+  }
+
+  async function importDatabase(file: File) {
+    const confirmed = window.confirm(
+      "이 백업을 현재 저장 폴더로 불러올까요?\n같은 경로의 문항·분류 파일은 백업 내용으로 덮어쓰고, 백업에 없는 기존 문서는 유지합니다.",
+    );
+    if (!confirmed) {
+      if (backupInput.current) backupInput.current.value = "";
+      return;
+    }
+
+    setTransferOperation("import");
+    setTransferMessage("");
+    try {
+      const result = await importLocalDatabaseBackup(file);
+      setTransferMessage(`${result.documentCount}개 문서, ${result.fileCount}개 DB 파일을 불러왔습니다. 화면을 새로고침하면 반영됩니다.`);
+    } catch (error) {
+      setTransferMessage(error instanceof Error ? error.message : "문항 DB를 불러오지 못했습니다.");
+    } finally {
+      setTransferOperation(null);
+      if (backupInput.current) backupInput.current.value = "";
     }
   }
 
@@ -1727,6 +1836,40 @@ function LocalStorageSettings() {
           </Button>
           {message && <span role="status" className="text-sm font-medium text-[#1f6b4f]">{message}</span>}
         </div>
+      </section>
+      <section className="rounded-2xl border border-[#e3e8e4] bg-white p-6">
+        <div className="flex items-start gap-3">
+          <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#edf1f7] text-[#52657d]"><Download size={21} /></span>
+          <div>
+            <h2 className="font-bold">문항 DB 백업 및 이동</h2>
+            <p className="mt-1 text-sm leading-6 text-[#6d7772]">문항 원본, 검수 영역, 분류와 문제지 정보를 ZIP 하나로 옮깁니다. 다른 PC에서는 먼저 새 저장 폴더를 연결한 뒤 백업을 불러오세요.</p>
+          </div>
+        </div>
+        <div className="mt-5 rounded-xl bg-[#f5f8f6] p-4 text-xs leading-5 text-[#5f6d66]">
+          내보내기 파일에는 <b>documents</b>와 <b>metadata</b>가 포함됩니다. 생성한 PDF·HWPX가 있는 exports 폴더는 중복과 용량 증가를 막기 위해 제외됩니다.
+        </div>
+        <input
+          ref={backupInput}
+          type="file"
+          accept=".zip,application/zip"
+          aria-label="문항 DB 백업 파일"
+          className="sr-only"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void importDatabase(file);
+          }}
+        />
+        <div className="mt-5 flex flex-wrap gap-3">
+          <Button disabled={!folder?.configured || transferOperation !== null} onClick={() => void exportDatabase()}>
+            {transferOperation === "export" ? <LoaderCircle className="animate-spin" size={16} /> : <Download size={16} />}
+            DB 백업 내보내기
+          </Button>
+          <Button disabled={!folder?.configured || transferOperation !== null} onClick={() => backupInput.current?.click()}>
+            {transferOperation === "import" ? <LoaderCircle className="animate-spin" size={16} /> : <Upload size={16} />}
+            DB 백업 불러오기
+          </Button>
+        </div>
+        {transferMessage && <p role="status" className="mt-4 text-sm font-medium text-[#1f6b4f]">{transferMessage}</p>}
       </section>
       <section className="rounded-2xl border border-[#e3e8e4] bg-white p-6">
         <h2 className="font-bold">무료 Firebase 구성</h2>

@@ -1,4 +1,8 @@
 import type { ReviewTrainingSample } from "./review-training";
+import {
+  createDatabaseBackupArchive,
+  parseDatabaseBackupArchive,
+} from "./local-database-backup";
 
 const DATABASE_NAME = "question-card-studio";
 const STORE_NAME = "settings";
@@ -42,6 +46,19 @@ export interface LocalExportResult {
 
 export interface TrainingDatasetExportResult extends LocalExportResult {
   sampleCount: number;
+}
+
+export interface LocalDatabaseBackupResult {
+  fileName: string;
+  blob: Blob;
+  fileCount: number;
+  size: number;
+}
+
+export interface LocalDatabaseImportResult {
+  fileCount: number;
+  documentCount: number;
+  size: number;
 }
 
 export interface LocalExamSet {
@@ -278,6 +295,82 @@ async function readOptionalJson<T>(directory: FileSystemDirectoryHandle, name: s
     if (error instanceof DOMException && error.name === "NotFoundError") return null;
     throw error;
   }
+}
+
+async function collectBackupFiles(
+  directory: FileSystemDirectoryHandle,
+  prefix: string,
+  files: Record<string, Uint8Array>,
+) {
+  for await (const [name, handle] of (directory as IterableDirectoryHandle).entries()) {
+    const path = `${prefix}/${name}`;
+    if (handle.kind === "directory") {
+      await collectBackupFiles(handle as FileSystemDirectoryHandle, path, files);
+      continue;
+    }
+    const file = await (handle as FileSystemFileHandle).getFile();
+    files[path] = new Uint8Array(await file.arrayBuffer());
+  }
+}
+
+async function collectOptionalBackupDirectory(
+  root: FileSystemDirectoryHandle,
+  name: "documents" | "metadata",
+  files: Record<string, Uint8Array>,
+) {
+  try {
+    const directory = await root.getDirectoryHandle(name);
+    await collectBackupFiles(directory, name, files);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "NotFoundError") return;
+    throw error;
+  }
+}
+
+export async function exportLocalDatabaseBackup(): Promise<LocalDatabaseBackupResult> {
+  const root = await getReadableRootDirectory();
+  const files: Record<string, Uint8Array> = {};
+  await collectOptionalBackupDirectory(root, "documents", files);
+  await collectOptionalBackupDirectory(root, "metadata", files);
+  if (!Object.keys(files).length) throw new Error("내보낼 문항 DB 파일이 없습니다.");
+
+  const exportedAt = new Date().toISOString();
+  const archive = createDatabaseBackupArchive(files, exportedAt);
+  const stamp = exportedAt.slice(0, 16).replace(/[-:T]/g, "");
+  return {
+    fileName: `question-card-studio-backup-${stamp}.zip`,
+    blob: new Blob([archive.slice().buffer as ArrayBuffer], { type: "application/zip" }),
+    fileCount: Object.keys(files).length,
+    size: archive.byteLength,
+  };
+}
+
+export async function importLocalDatabaseBackup(file: File): Promise<LocalDatabaseImportResult> {
+  const root = await getWritableRootDirectory();
+  const parsed = parseDatabaseBackupArchive(new Uint8Array(await file.arrayBuffer()));
+
+  for (const [path, bytes] of Object.entries(parsed.files)) {
+    const segments = path.split("/");
+    const fileName = segments.pop();
+    if (!fileName) throw new Error("백업 파일 경로가 올바르지 않습니다.");
+    const directory = await ensureDirectory(root, segments);
+    const fileHandle = await directory.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(new Blob([bytes.slice().buffer as ArrayBuffer]));
+    await writable.close();
+  }
+
+  const documentIds = new Set(
+    Object.keys(parsed.files)
+      .filter((path) => path.startsWith("documents/"))
+      .map((path) => path.split("/")[1])
+      .filter(Boolean),
+  );
+  return {
+    fileCount: parsed.manifest.fileCount,
+    documentCount: documentIds.size,
+    size: parsed.totalSize,
+  };
 }
 
 async function removeQuestionClassifications(

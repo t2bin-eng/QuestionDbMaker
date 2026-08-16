@@ -28,6 +28,8 @@ vi.mock("@/lib/local-file-store", () => ({
   deleteLocalDocument: vi.fn().mockResolvedValue(undefined),
   deleteLocalExamSet: vi.fn().mockResolvedValue(undefined),
   deleteLocalQuestionCard: vi.fn().mockResolvedValue(undefined),
+  exportLocalDatabaseBackup: vi.fn(),
+  importLocalDatabaseBackup: vi.fn(),
   listLocalExamSets: vi.fn().mockResolvedValue([]),
   listLocalDocuments: vi.fn().mockResolvedValue([]),
   listLocalQuestionCards: vi.fn().mockResolvedValue([]),
@@ -55,6 +57,10 @@ describe("WorkspacePage local storage UI", () => {
   it("shows the local storage settings", async () => {
     render(<WorkspacePage view="settings" />);
     expect(screen.getByRole("heading", { name: "PC 로컬 파일 저장소" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "문항 DB 백업 및 이동" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "DB 백업 내보내기" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "DB 백업 불러오기" })).toBeDisabled();
+    expect(screen.getByLabelText("문항 DB 백업 파일")).toHaveAttribute("accept", ".zip,application/zip");
     expect(await screen.findByText("선택되지 않음")).toBeInTheDocument();
     expect(screen.getByText(/Firebase Storage와 Blaze 결제 등록은 필요하지 않습니다/)).toBeInTheDocument();
   });
@@ -135,7 +141,7 @@ describe("WorkspacePage local storage UI", () => {
   it("filters question cards by multiple categories and difficulties", async () => {
     const categoryIds = [
       "category-history-1-1",
-      "category-history-1-2",
+      "category-history-1-1-middle-1",
       "category-history-1-3",
       "category-history-1-1",
     ];
@@ -164,11 +170,19 @@ describe("WorkspacePage local storage UI", () => {
 
     const categoryFilter = screen.getByRole("group", { name: "단원 필터" });
     fireEvent.click(within(categoryFilter).getByText("전체 단원"));
+    const majorOption = within(categoryFilter).getByRole("checkbox", { name: "근대 이전 한국사의 이해" }).closest("label");
+    const middleOption = within(categoryFilter).getByRole("checkbox", { name: "고대 국가의 성장" }).closest("label");
+    expect(majorOption).not.toBeNull();
+    expect(middleOption).not.toBeNull();
+    expect(within(majorOption as HTMLElement).getByText("대단원")).toBeInTheDocument();
+    expect(within(majorOption as HTMLElement).getByText("(3)")).toBeInTheDocument();
+    expect(within(middleOption as HTMLElement).getByText("중단원")).toBeInTheDocument();
+    expect(within(middleOption as HTMLElement).getByText("(1)")).toBeInTheDocument();
     fireEvent.click(within(categoryFilter).getByRole("checkbox", { name: "근대 이전 한국사의 이해" }));
     fireEvent.click(within(categoryFilter).getByRole("checkbox", { name: "근대 국가 수립의 노력" }));
 
     expect(screen.getByText("1번 문항")).toBeInTheDocument();
-    expect(screen.queryByText("2번 문항")).not.toBeInTheDocument();
+    expect(screen.getByText("2번 문항")).toBeInTheDocument();
     expect(screen.getByText("3번 문항")).toBeInTheDocument();
     expect(screen.getByText("4번 문항")).toBeInTheDocument();
 
@@ -325,7 +339,12 @@ describe("WorkspacePage local storage UI", () => {
     ));
     expect(screen.queryByRole("dialog", { name: "선택 문항 일괄 분류" })).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("2개 문항의 분류를 저장했습니다.");
-    expect(screen.getAllByText("한국사1", { selector: "span" })).toHaveLength(2);
+    const firstCard = screen.getByText("1번 문항").closest("article");
+    const secondCard = screen.getByText("2번 문항").closest("article");
+    expect(firstCard).not.toBeNull();
+    expect(secondCard).not.toBeNull();
+    expect(within(firstCard as HTMLElement).getByText("한국사1")).toBeInTheDocument();
+    expect(within(secondCard as HTMLElement).getByText("한국사1")).toBeInTheDocument();
   });
 
   it("removes a question from the current exam without deleting the card", async () => {
