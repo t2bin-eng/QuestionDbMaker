@@ -42,6 +42,20 @@ describe("automatic middle-unit classification", () => {
     expect(result.isConfident).toBe(false);
   });
 
+  it("marks Gyeongbu Expressway as a decisive industrialization anchor", () => {
+    const candidates = buildMiddleUnitCandidates(data, "subject-history-2");
+    const result = classifyQuestionLocally({
+      questionKey: "q-42",
+      questionNumber: "42",
+      questionText: "경부 고속 국도 준공 기념우표와 새마을 운동 기념우표가 발행되었다.",
+      answerText: "",
+      explanationText: "",
+    }, candidates);
+
+    expect(result.candidates[0].categoryName).toBe("산업화의 성과와 사회·환경 문제");
+    expect(result.candidates[0].decisiveMatchedTerms).toContain("경부 고속 국도");
+  });
+
   it("uses confirmed examples as local learning evidence", () => {
     const candidates = buildMiddleUnitCandidates(data, "subject-history-2");
     const category = candidates.find((candidate) => candidate.name === "산업화의 성과와 사회·환경 문제");

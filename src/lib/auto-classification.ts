@@ -28,6 +28,7 @@ export interface RankedClassificationCandidate {
   majorName: string;
   score: number;
   matchedTerms: string[];
+  decisiveMatchedTerms?: string[];
 }
 
 export interface LocalClassificationResult {
@@ -94,6 +95,27 @@ const MIDDLE_UNIT_KEYWORDS: Record<string, string[]> = {
   "두 차례의 세계 대전과 국제 질서의 변화": ["제1차 세계 대전", "베르사유 체제", "러시아 혁명", "대공황", "파시즘", "나치", "제2차 세계 대전", "국제 연맹", "국제 연합"],
   "냉전과 탈냉전": ["냉전", "트루먼 독트린", "마셜 계획", "NATO", "바르샤바 조약", "쿠바 미사일 위기", "데탕트", "소련 해체", "탈냉전"],
   "21세기의 세계와 세계시민의 과제": ["세계화", "정보화", "기후 변화", "난민", "테러", "빈곤", "인권", "지속 가능 발전", "세계 시민", "국제 협력"],
+};
+
+// These concepts identify one curriculum middle unit strongly enough to constrain
+// the semantic model. Keep this list deliberately small; broad terms such as
+// "박정희" or "경제 성장" occur in more than one unit and must not be decisive.
+const DECISIVE_MIDDLE_UNIT_KEYWORDS: Record<string, string[]> = {
+  "제국주의 질서와 일제의 식민 통치 정책": ["헌병 경찰", "창씨개명", "국가 총동원령"],
+  "경제 구조의 변화와 경제생활": ["토지 조사 사업", "산미 증식 계획", "회사령", "화폐 정리 사업"],
+  "민족 운동의 전개와 분화": ["봉오동 전투", "청산리 대첩", "의열단", "한인 애국단", "신간회"],
+  "사회 문화의 변화와 대중 운동": ["물산 장려 운동", "민립 대학 설립 운동", "브나로드 운동", "형평 운동"],
+  "독립 국가 건설 노력": ["한국 광복군", "조선 의용대", "조선 건국 동맹", "건국 강령"],
+  "냉전 체제와 대한민국 정부 수립": ["5·10 총선거", "반민특위", "좌우 합작 위원회", "남북 협상"],
+  "6·25 전쟁과 남북 분단의 고착화": ["인천 상륙 작전", "1·4 후퇴", "한미 상호 방위 조약"],
+  "민주화를 위한 노력": ["3·15 부정 선거", "4·19 혁명", "부마 민주 항쟁", "5·18 민주화 운동", "4·13 호헌 조치"],
+  "산업화의 성과와 사회·환경 문제": [
+    "경제 개발 5개년 계획", "경부 고속 국도", "경부 고속도로", "경부고속국도", "경부고속도로",
+    "새마을 운동", "수출 100억 달러", "3저 호황", "전태일", "파독 광부", "파독 간호사",
+  ],
+  "6월 민주 항쟁 이후의 민주화": ["6월 민주 항쟁", "6·29 민주화 선언", "5년 단임 대통령 직선제"],
+  "외환 위기 극복과 사회·문화의 변동": ["IMF 외환 위기", "금 모으기 운동"],
+  "한반도 평화와 동아시아 공존을 위한 노력": ["7·4 남북 공동 성명", "남북 기본 합의서", "6·15 남북 공동 선언", "개성 공단"],
 };
 
 function normalizeText(value: string) {
@@ -180,8 +202,17 @@ function scoreCandidate(
   const answer = compact(record.answerText);
   const explanation = compact(record.explanationText);
   const terms = [candidate.name, ...(MIDDLE_UNIT_KEYWORDS[candidate.name] ?? [])];
+  const decisiveTerms = DECISIVE_MIDDLE_UNIT_KEYWORDS[candidate.name] ?? [];
   let score = 0;
   const matchedTerms: string[] = [];
+  const decisiveMatchedTerms = decisiveTerms.filter((term) => {
+    const normalizedTerm = compact(term);
+    return normalizedTerm.length >= 2 && (
+      question.includes(normalizedTerm) ||
+      answer.includes(normalizedTerm) ||
+      explanation.includes(normalizedTerm)
+    );
+  });
 
   terms.forEach((term, index) => {
     const normalizedTerm = compact(term);
@@ -208,6 +239,7 @@ function scoreCandidate(
     majorName: candidate.majorName,
     score,
     matchedTerms: matchedTerms.slice(0, 6),
+    decisiveMatchedTerms: decisiveMatchedTerms.slice(0, 4),
   } satisfies RankedClassificationCandidate;
 }
 

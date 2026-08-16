@@ -61,13 +61,33 @@ describe("browser semantic classification ranking", () => {
         categoryId: "industry",
         categoryName: "산업화",
         majorName: "대한민국",
-        score: 8.4,
+        score: 3.8,
         matchedTerms: ["새마을 운동", "산업화"],
+        decisiveMatchedTerms: ["새마을 운동"],
       }],
     );
     expect(result?.categoryId).toBe("industry");
     expect(result?.isConfident).toBe(true);
-    expect(result?.reason).toContain("고유 핵심 개념");
+    expect(result?.reason).toContain("고유 핵심어");
+  });
+
+  it("lets one unambiguous curriculum anchor correct a confident semantic miss", () => {
+    const result = rankSemanticCandidates(
+      "q-gyeongbu",
+      [0.05, 0.95],
+      candidates,
+      [[[1, 0]], [[0, 1]]],
+      [{
+        categoryId: "industry",
+        categoryName: "산업화",
+        majorName: "대한민국",
+        score: 1.9,
+        matchedTerms: ["경부 고속 국도"],
+        decisiveMatchedTerms: ["경부 고속 국도"],
+      }],
+    );
+    expect(result?.categoryId).toBe("industry");
+    expect(result?.isConfident).toBe(true);
   });
 
   it("keeps a semantically tied result for manual review", () => {

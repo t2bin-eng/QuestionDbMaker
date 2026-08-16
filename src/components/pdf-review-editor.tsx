@@ -42,6 +42,7 @@ import {
   type ClassificationData,
 } from "@/lib/classification";
 import { classifyWithBrowserEmbeddings } from "@/lib/browser-semantic-classifier";
+import { enrichQuestionTextsWithLocalOcr } from "@/lib/browser-question-ocr";
 import { extractReviewedQuestionTexts } from "@/lib/question-text-extraction";
 import type { RegionType } from "@/types/domain";
 
@@ -583,7 +584,23 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
     try {
       setMessage("검수 문항의 텍스트를 추출하고 있습니다.");
       const pages = await collectPageContents();
-      const textRecords = extractReviewedQuestionTexts(pages, reviewedRegions);
+      let textRecords = extractReviewedQuestionTexts(pages, reviewedRegions);
+      let ocrSummary = "";
+      try {
+        const ocr = await enrichQuestionTextsWithLocalOcr(
+          pdf,
+          pages,
+          reviewedRegions,
+          textRecords,
+          (progress) => setMessage(progress),
+        );
+        textRecords = ocr.records;
+        if (ocr.enrichedCount) ocrSummary = `이미지 OCR ${ocr.enrichedCount}개 반영`;
+      } catch (error) {
+        ocrSummary = error instanceof Error
+          ? `이미지 OCR 생략: ${error.message}`
+          : "이미지 OCR을 사용할 수 없어 PDF 텍스트만 분석";
+      }
       await saveQuestionTextsLocally(documentId, textRecords);
       const [existingClassifications, confirmedExamples] = await Promise.all([
         readQuestionClassificationsLocally(),
@@ -648,6 +665,7 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
       const summary = `의미 분석 우선 분류 ${semanticCount}개 완료${semanticRuntime ? ` (${semanticRuntime})` : ""}`;
       return [
         summary,
+        ocrSummary,
         reviewCount ? `점수 차이가 작은 문항 ${reviewCount}개는 확인 필요로 유지` : "",
         remainingCount ? `텍스트 부족 ${remainingCount}개` : "",
         semanticError,
@@ -896,7 +914,7 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
             >
               {activeSubjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
             </select>
-            <span className="mt-2 block font-normal leading-5 text-[#738078]">모든 문항을 브라우저 의미 분석(WebGPU/WASM)으로 먼저 분류합니다. 키워드는 동점 보정과 고유 핵심 개념 오류 교정에만 사용하고, 점수 차이가 작으면 확인 필요로 남깁니다.</span>
+            <span className="mt-2 block font-normal leading-5 text-[#738078]">이미지 글자는 무료 로컬 OCR로 보강하고, 시대·중단원 고유 핵심어로 후보를 제한한 뒤 WebGPU/WASM 의미 분석을 실행합니다. 점수 차이가 작거나 근거가 충돌하면 확인 필요로 남깁니다.</span>
           </label>
           {inspection && (
             <div className="mt-4 rounded-xl border border-[#cddfd5] bg-[#f1f8f4] p-3 text-xs leading-5 text-[#315b49]">

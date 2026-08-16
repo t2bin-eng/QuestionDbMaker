@@ -153,20 +153,21 @@ export function rankSemanticCandidates(
         similarity,
         localSignal,
         matchedTerms: localCandidates.find((item) => item.categoryId === candidate.id)?.matchedTerms ?? [],
+        decisiveMatchedTerms: localCandidates.find((item) => item.categoryId === candidate.id)?.decisiveMatchedTerms ?? [],
       };
     })
     .sort((left, right) => right.score - left.score);
   const semanticFirst = ranked[0];
   if (!semanticFirst) return null;
-  const localFirst = localCandidates[0];
-  const hasDistinctiveLocalAnchor = Boolean(
-    localFirst &&
-    localFirst.categoryId !== semanticFirst.categoryId &&
-    localFirst.score >= 7 &&
-    localFirst.matchedTerms.length >= 2,
-  );
+  const anchoredLocalCandidates = localCandidates.filter((candidate) =>
+    (candidate.decisiveMatchedTerms?.length ?? 0) > 0);
+  const anchoredCategoryIds = new Set(anchoredLocalCandidates.map((candidate) => candidate.categoryId));
+  const anchoredLocalCandidate = anchoredCategoryIds.size === 1
+    ? anchoredLocalCandidates[0]
+    : undefined;
+  const hasDistinctiveLocalAnchor = Boolean(anchoredLocalCandidate);
   const anchoredCandidate = hasDistinctiveLocalAnchor
-    ? ranked.find((candidate) => candidate.categoryId === localFirst?.categoryId)
+    ? ranked.find((candidate) => candidate.categoryId === anchoredLocalCandidate?.categoryId)
     : undefined;
   const first = anchoredCandidate ?? semanticFirst;
   const ordered = anchoredCandidate
@@ -178,7 +179,7 @@ export function rankSemanticCandidates(
   const semanticEvidence = clamp((first.similarity - 0.22) / 0.48);
   const separation = clamp((semanticMargin - 0.004) / 0.1);
   const confidence = Number((anchoredCandidate
-    ? clamp(0.72 + Math.min(0.18, (localFirst?.score ?? 0) / 100), 0.72, 0.9)
+    ? clamp(0.72 + Math.min(0.18, (anchoredLocalCandidate?.score ?? 0) / 100), 0.72, 0.9)
     : clamp(0.35 + semanticEvidence * 0.4 + separation * 0.25, 0.35, 0.96)).toFixed(3));
   const localAgrees = localCandidates[0]?.categoryId === first.categoryId &&
     (localCandidates[0]?.score ?? 0) >= 3;
@@ -193,6 +194,7 @@ export function rankSemanticCandidates(
     majorName: candidate.majorName,
     score: candidate.score,
     matchedTerms: candidate.matchedTerms,
+    decisiveMatchedTerms: candidate.decisiveMatchedTerms,
   }));
 
   return {
@@ -203,7 +205,7 @@ export function rankSemanticCandidates(
     semanticSimilarity: Number(first.similarity.toFixed(4)),
     semanticMargin: Number((anchoredCandidate ? 0 : semanticMargin).toFixed(4)),
     reason: anchoredCandidate
-      ? `WebGPU 의미 분석 후 고유 핵심 개념 ${localFirst?.matchedTerms.slice(0, 3).join(", ")} 일치로 교정`
+      ? `시대·중단원 고유 핵심어 ${(anchoredLocalCandidate?.decisiveMatchedTerms ?? []).slice(0, 3).join(", ")}로 후보를 제한한 뒤 WebGPU 의미 분석`
       : `대단원→중단원 계층형 의미 유사도 ${Math.round(first.similarity * 100)}% · 2순위와 차이 ${(semanticMargin * 100).toFixed(1)}%p${usedLocalTieBreaker ? " · 규칙 동점 보정 적용" : ""}`,
     candidates: alternatives,
   };

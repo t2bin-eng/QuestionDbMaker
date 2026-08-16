@@ -1388,7 +1388,7 @@ function QuestionCards() {
                         ? "이전 AI 자동 분류"
                         : "로컬 규칙 분류"}
                     {typeof card.classification.autoConfidence === "number"
-                      ? ` · 신뢰도 ${Math.round(card.classification.autoConfidence * 100)}%`
+                      ? ` · 분류 점수 ${Math.round(card.classification.autoConfidence * 100)}%`
                       : ""}
                     {" · 분류 설정에서 확인하면 학습 데이터로 반영"}
                   </p>
