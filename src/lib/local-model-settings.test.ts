@@ -11,7 +11,7 @@ describe("local Bionic model settings", () => {
 
   it("normalizes OpenAI-compatible v1 URLs to the local server root", () => {
     expect(normalizeLocalModelBaseUrl("http://localhost:1234/v1/"))
-      .toBe("http://localhost:1234");
+      .toBe("http://127.0.0.1:1234");
   });
 
   it("uses Qwen 3.5 9B as the default local vision model", () => {
@@ -27,7 +27,7 @@ describe("local Bionic model settings", () => {
     });
     expect(readLocalModelSettings()).toMatchObject({
       enabled: false,
-      baseUrl: "http://localhost:1234",
+      baseUrl: "http://127.0.0.1:1234",
       model: "qwen/qwen3.5-9b",
     });
   });

@@ -2208,7 +2208,7 @@ function LocalStorageSettings() {
               className="focus-ring mt-1.5 w-full rounded-xl border border-[#dce3df] px-3 py-2.5 text-sm font-normal text-[#18201d]"
               value={localModel.baseUrl}
               onChange={(event) => setLocalModel((current) => ({ ...current, baseUrl: event.target.value }))}
-              placeholder="http://localhost:1234"
+              placeholder="http://127.0.0.1:1234"
             />
           </label>
           <label className="text-xs font-semibold text-[#526159]">

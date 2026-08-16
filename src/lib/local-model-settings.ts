@@ -10,13 +10,17 @@ export interface LocalModelSettings {
 export const LOCAL_MODEL_SETTINGS_KEY = "question-card-studio:local-model";
 export const DEFAULT_LOCAL_MODEL_SETTINGS: LocalModelSettings = {
   enabled: true,
-  baseUrl: "http://localhost:1234",
+  baseUrl: "http://127.0.0.1:1234",
   model: "qwen/qwen3.5-9b",
   apiToken: "",
 };
 
 export function normalizeLocalModelBaseUrl(value: string) {
-  return value.trim().replace(/\/+$/, "").replace(/\/(?:api\/)?v1$/i, "");
+  return value
+    .trim()
+    .replace(/^http:\/\/localhost(?=[:/]|$)/i, "http://127.0.0.1")
+    .replace(/\/+$/, "")
+    .replace(/\/(?:api\/)?v1$/i, "");
 }
 
 export function readLocalModelSettings(): LocalModelSettings {
