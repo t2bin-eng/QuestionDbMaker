@@ -21,6 +21,7 @@ export interface HwpxDocumentOptions {
   showScores?: boolean;
   headerXml: string;
   questions: HwpxQuestionImage[];
+  solutions?: HwpxQuestionImage[];
 }
 
 const XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>';
@@ -55,8 +56,9 @@ function textParagraph(
   id: number,
   charPrIDRef = 0,
   paraPrIDRef = 0,
+  pageBreak = false,
 ) {
-  return `<hp:p id="${id}" paraPrIDRef="${paraPrIDRef}" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="${charPrIDRef}"><hp:t>${escapeXml(text)}</hp:t></hp:run></hp:p>`;
+  return `<hp:p id="${id}" paraPrIDRef="${paraPrIDRef}" styleIDRef="0" pageBreak="${pageBreak ? 1 : 0}" columnBreak="0" merged="0"><hp:run charPrIDRef="${charPrIDRef}"><hp:t>${escapeXml(text)}</hp:t></hp:run></hp:p>`;
 }
 
 function columnStartParagraph(id: number, columns: 1 | 2) {
@@ -110,12 +112,25 @@ function createSectionXml(options: HwpxDocumentOptions) {
     pictureParagraph(question, index, 1_001 + index * 2, columns, questionsPerPage),
     textParagraph("", 1_002 + index * 2, 18),
   ].join("")).join("");
+  const solutions = options.solutions ?? [];
+  const solutionBody = solutions.length
+    ? [
+        textParagraph("정답 및 해설", 50_000, 24, 20, true),
+        columnStartParagraph(50_001, columns),
+        ...solutions.map((solution, index) => [
+          textParagraph(solution.label, 50_010 + index * 3, 1, 20),
+          pictureParagraph(solution, options.questions.length + index, 50_011 + index * 3, columns, questionsPerPage),
+          textParagraph("", 50_012 + index * 3, 18),
+        ].join("")),
+      ].join("")
+    : "";
 
-  return `${XML_DECLARATION}<hs:sec ${NAMESPACES}>${sectionProperties}${textParagraph(options.title, 200, 24, 20)}${textParagraph(info, 201, 0, 20)}${studentFields ? textParagraph(studentFields, 202, 1, 28) : ""}${textParagraph("────────────────────────────────────────", 203, 18, 20)}${columnStartParagraph(204, columns)}${body}</hs:sec>`;
+  return `${XML_DECLARATION}<hs:sec ${NAMESPACES}>${sectionProperties}${textParagraph(options.title, 200, 24, 20)}${textParagraph(info, 201, 0, 20)}${studentFields ? textParagraph(studentFields, 202, 1, 28) : ""}${textParagraph("────────────────────────────────────────", 203, 18, 20)}${columnStartParagraph(204, columns)}${body}${solutionBody}</hs:sec>`;
 }
 
 function createContentHpf(options: HwpxDocumentOptions) {
-  const images = options.questions.map((_, index) =>
+  const allImages = [...options.questions, ...(options.solutions ?? [])];
+  const images = allImages.map((_, index) =>
     `<opf:item id="image${index + 1}" href="BinData/image${index + 1}.png" media-type="image/png" isEmbeded="1"/>`,
   ).join("");
   const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -132,13 +147,13 @@ export function createHwpxPackage(options: HwpxDocumentOptions) {
     "Contents/section0.xml": strToU8(createSectionXml(options)),
     "Contents/content.hpf": strToU8(createContentHpf(options)),
     "settings.xml": strToU8(`${XML_DECLARATION}<ha:HWPApplicationSetting xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0"><ha:CaretPosition listIDRef="0" paraIDRef="0" pos="0"/></ha:HWPApplicationSetting>`),
-    "Preview/PrvText.txt": strToU8([options.title, options.school, options.grade, options.subject, options.examName, options.examDate, ...options.questions.map((question) => question.label)].filter(Boolean).join("\n")),
+    "Preview/PrvText.txt": strToU8([options.title, options.school, options.grade, options.subject, options.examName, options.examDate, ...options.questions.map((question) => question.label), ...(options.solutions ?? []).map((solution) => solution.label)].filter(Boolean).join("\n")),
     "META-INF/container.xml": strToU8(`${XML_DECLARATION}<ocf:container xmlns:ocf="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:hpf="http://www.hancom.co.kr/schema/2011/hpf"><ocf:rootfiles><ocf:rootfile full-path="Contents/content.hpf" media-type="application/hwpml-package+xml"/><ocf:rootfile full-path="Preview/PrvText.txt" media-type="text/plain"/><ocf:rootfile full-path="META-INF/container.rdf" media-type="application/rdf+xml"/></ocf:rootfiles></ocf:container>`),
     "META-INF/container.rdf": strToU8(`${XML_DECLARATION}<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about=""><ns0:hasPart xmlns:ns0="http://www.hancom.co.kr/hwpml/2016/meta/pkg#" rdf:resource="Contents/header.xml"/></rdf:Description><rdf:Description rdf:about="Contents/header.xml"><rdf:type rdf:resource="http://www.hancom.co.kr/hwpml/2016/meta/pkg#HeaderFile"/></rdf:Description><rdf:Description rdf:about=""><ns0:hasPart xmlns:ns0="http://www.hancom.co.kr/hwpml/2016/meta/pkg#" rdf:resource="Contents/section0.xml"/></rdf:Description><rdf:Description rdf:about="Contents/section0.xml"><rdf:type rdf:resource="http://www.hancom.co.kr/hwpml/2016/meta/pkg#SectionFile"/></rdf:Description><rdf:Description rdf:about=""><rdf:type rdf:resource="http://www.hancom.co.kr/hwpml/2016/meta/pkg#Document"/></rdf:Description></rdf:RDF>`),
     "META-INF/manifest.xml": strToU8(`${XML_DECLARATION}<odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"/>`),
   };
 
-  options.questions.forEach((question, index) => {
+  [...options.questions, ...(options.solutions ?? [])].forEach((question, index) => {
     files[`BinData/image${index + 1}.png`] = question.data;
   });
 

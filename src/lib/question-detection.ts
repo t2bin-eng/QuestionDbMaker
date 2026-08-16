@@ -57,6 +57,8 @@ const QUESTION_MARKER = /^\s*(\d{1,3})\s*[.)](?!\d)(?:\s|$)/;
 const QUESTION_CUE = /[?？]$|\[(?:\d+)\s*점\]|(?:옳은|옳지 않은|적절한|적절하지 않은|고르시오|것은)/;
 const CHOICE_CUE = /^[①②③④⑤⑥]/;
 const SECTION_BOUNDARY = /^(?:정답|해설|풀이|해답|정답률|보기\s*선택\s*비율)(?:\s|$)/;
+const ANSWER_BOUNDARY = /^정답(?:\s|$)/;
+const EXPLANATION_BOUNDARY = /^(?:해설|풀이|해답)(?:\s|$)/;
 const FOOTER_CUE = /저작권|무단\s*(?:복제|전재)|^\s*\d+\s*\/\s*\d+\s*$/;
 const PAGE_EDGE_PADDING_RATIO = 0.015;
 const EARLY_SECTION_BOUNDARY_RATIO = 0.16;
@@ -584,14 +586,111 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
     void addedContinuation;
   }
 
+  const supplementaryOrder = new Map<string, number>();
+  let currentQuestion: EditableRegion | null = null;
+  let activeSupplement: { type: "answer" | "explanation"; start: number } | null = null;
+
+  const addSupplementRegion = (
+    page: ReturnType<typeof analyzePageLayout>,
+    column: number,
+    type: "answer" | "explanation",
+    start: number,
+    end: number,
+  ) => {
+    if (!currentQuestion || end <= start + 4) return;
+    const meaningfulLines = page.lines.filter((line) =>
+      page.columnOf(line) === column &&
+      line.y + line.height >= start &&
+      line.y < end &&
+      !FOOTER_CUE.test(line.text) &&
+      line.text.replace(/\s/g, "").length >= 2,
+    );
+    const meaningfulVisuals = page.visuals.filter((visual) => {
+      const centerX = visual.x + visual.width / 2;
+      return page.columnOf({ x: centerX }) === column &&
+        visual.y + visual.height >= start && visual.y < end;
+    });
+    if (!meaningfulLines.length && !meaningfulVisuals.length) return;
+
+    const columnGap = page.pageWidth * 0.025;
+    const columnLeft = column === 1 ? page.split : 0;
+    const columnRight = page.twoColumns && column === 0
+      ? page.split - columnGap
+      : page.pageWidth;
+    const left = Math.max(columnLeft + 10, Math.min(
+      ...meaningfulLines.map((line) => line.x - 8),
+      columnLeft + 10,
+    ));
+    const orderKey = `${currentQuestion.questionKey}:${type}`;
+    const sortOrder = supplementaryOrder.get(orderKey) ?? 0;
+    supplementaryOrder.set(orderKey, sortOrder + 1);
+    allRegions.push({
+      id: crypto.randomUUID(),
+      questionKey: currentQuestion.questionKey,
+      questionNumber: currentQuestion.questionNumber,
+      pageNumber: page.pageNumber,
+      xRatio: clamp(left / page.pageWidth),
+      yRatio: clamp(Math.max(8, start) / page.pageHeight),
+      widthRatio: clamp((columnRight - left - 10) / page.pageWidth, 0.04),
+      heightRatio: clamp((Math.min(page.contentBottom, end) - Math.max(8, start)) / page.pageHeight, 0.02),
+      regionType: type,
+      sortOrder,
+      status: "auto_detected",
+      detectionConfidence: type === "answer" ? 0.9 : 0.84,
+      detectionReasons: [type === "answer" ? "정답 표식" : "해설 표식"],
+    });
+  };
+
+  for (const { page, column } of segments) {
+    const top = page.contentTop.get(column) ?? page.pageHeight * PAGE_EDGE_PADDING_RATIO;
+    const continuingSupplement = activeSupplement as { type: "answer" | "explanation"; start: number } | null;
+    if (continuingSupplement) activeSupplement = { type: continuingSupplement.type, start: top };
+    const segmentLines = page.lines
+      .filter((line) => page.columnOf(line) === column && line.y >= top && line.y < page.contentBottom)
+      .sort((a, b) => a.y - b.y || a.x - b.x);
+
+    for (const line of segmentLines) {
+      const marker = page.markers.find((candidate) => candidate.line === line);
+      const boundaryType = ANSWER_BOUNDARY.test(line.text)
+        ? "answer" as const
+        : EXPLANATION_BOUNDARY.test(line.text)
+          ? "explanation" as const
+          : null;
+      if (!marker && !boundaryType) continue;
+
+      if (activeSupplement) {
+        addSupplementRegion(page, column, activeSupplement.type, activeSupplement.start, line.y - 6);
+      }
+
+      if (marker) {
+        const markerRegion = baseRegions.find((region) =>
+          region.pageNumber === page.pageNumber &&
+          region.questionNumber === marker.match[1] &&
+          Math.abs(region.yRatio * page.pageHeight - (marker.line.y - 8)) < 3 &&
+          Math.abs(region.xRatio * page.pageWidth - Math.max((column === 1 ? page.split : 0) + 10, marker.line.x - 10)) < 3,
+        );
+        currentQuestion = markerRegion ?? null;
+        activeSupplement = null;
+      } else if (boundaryType && currentQuestion) {
+        activeSupplement = { type: boundaryType, start: Math.max(top, line.y - 6) };
+      }
+    }
+
+    if (activeSupplement) {
+      addSupplementRegion(page, column, activeSupplement.type, activeSupplement.start, page.contentBottom);
+    }
+  }
+
   const sortedRegions = allRegions.sort((a, b) =>
     (questionOrder.get(a.questionKey) ?? Number.MAX_SAFE_INTEGER) -
       (questionOrder.get(b.questionKey) ?? Number.MAX_SAFE_INTEGER) ||
+    ({ question: 0, answer: 1, explanation: 2 }[a.regionType] -
+      { question: 0, answer: 1, explanation: 2 }[b.regionType]) ||
     a.sortOrder - b.sortOrder ||
     a.pageNumber - b.pageNumber,
   );
 
-  const firstSegments = sortedRegions.filter((region) => region.sortOrder === 0);
+  const firstSegments = sortedRegions.filter((region) => region.regionType === "question" && region.sortOrder === 0);
   for (let index = 1; index < firstSegments.length; index += 1) {
     const previous = Number(firstSegments[index - 1].questionNumber);
     const current = Number(firstSegments[index].questionNumber);

@@ -33,6 +33,7 @@ import {
   type LocalExamSet,
   type LocalFolderState,
   type LocalQuestionCardSummary,
+  type LocalQuestionRegionSummary,
   type QuestionClassification,
 } from "@/lib/local-file-store";
 import { createHwpxPackage, type HwpxQuestionImage } from "@/lib/hwpx";
@@ -212,12 +213,13 @@ async function renderQuestionCardPreview(
   card: LocalQuestionCardSummary,
   output: HTMLCanvasElement,
   scale = 1.35,
+  regions: LocalQuestionRegionSummary[] = card.regions,
 ) {
   const pdf = await getQuestionPdf(card.documentId);
   const gap = Math.max(12, Math.round(scale * 9));
   const segments: HTMLCanvasElement[] = [];
 
-  for (const region of card.regions) {
+  for (const region of regions) {
     const page = await pdf.getPage(region.pageNumber);
     const viewport = page.getViewport({ scale });
     const pageCanvas = document.createElement("canvas");
@@ -267,6 +269,43 @@ async function renderQuestionCardPreview(
   }
 }
 
+async function renderQuestionSolutionCanvas(card: LocalQuestionCardSummary) {
+  const answerRegions = card.answerRegions ?? [];
+  const explanationRegions = card.explanationRegions ?? [];
+  if (!answerRegions.length && !explanationRegions.length) return null;
+
+  const sections: Array<{ label: string; canvas: HTMLCanvasElement }> = [];
+  for (const [label, regions] of [["정답", answerRegions], ["해설", explanationRegions]] as const) {
+    if (!regions.length) continue;
+    const canvas = document.createElement("canvas");
+    await renderQuestionCardPreview(card, canvas, 2.1, [...regions]);
+    sections.push({ label, canvas });
+  }
+
+  const width = Math.max(...sections.map((section) => section.canvas.width), 640);
+  const headingHeight = 48;
+  const gap = 24;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = sections.reduce((height, section) => height + headingHeight + section.canvas.height, 0) + gap * Math.max(0, sections.length - 1);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("정답·해설 이미지를 만들지 못했습니다.");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  let top = 0;
+  for (const section of sections) {
+    context.fillStyle = "#1f6b4f";
+    context.font = '700 27px "Malgun Gothic", "Noto Sans KR", sans-serif';
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillText(section.label, 10, top + headingHeight / 2);
+    top += headingHeight;
+    context.drawImage(section.canvas, Math.floor((width - section.canvas.width) / 2), top);
+    top += section.canvas.height + gap;
+  }
+  return trimCanvasWhitespace(canvas, 14);
+}
+
 async function renderQuestionCardCanvas(card: LocalQuestionCardSummary, score: number | null) {
   const renderedCanvas = document.createElement("canvas");
   await renderQuestionCardPreview(card, renderedCanvas, 2.6);
@@ -304,11 +343,19 @@ async function renderQuestionCardPng(card: LocalQuestionCardSummary, score: numb
   };
 }
 
-function QuestionCardPreview({ card }: { card: LocalQuestionCardSummary }) {
+async function canvasToPng(canvas: HTMLCanvasElement) {
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((result) => result ? resolve(result) : reject(new Error("이미지를 PNG로 변환하지 못했습니다.")), "image/png");
+  });
+  return { data: new Uint8Array(await blob.arrayBuffer()), width: canvas.width, height: canvas.height };
+}
+
+function QuestionCardPreview({ card, onOpen }: { card: LocalQuestionCardSummary; onOpen?: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [visible, setVisible] = useState(false);
   const [error, setError] = useState(false);
+  const hoverTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -335,12 +382,78 @@ function QuestionCardPreview({ card }: { card: LocalQuestionCardSummary }) {
     return () => { cancelled = true; };
   }, [card, visible]);
 
+  useEffect(() => () => {
+    if (hoverTimerRef.current !== null) window.clearTimeout(hoverTimerRef.current);
+  }, []);
+
   return (
-    <div ref={containerRef} className="grid h-64 place-items-center overflow-hidden border-b border-[#e3e8e4] bg-[#f1f3ef] p-3">
+    <div
+      ref={containerRef}
+      role={onOpen ? "button" : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      aria-label={onOpen ? `${card.sourceQuestionNumber ?? ""}번 문항 전체 미리보기` : undefined}
+      onMouseEnter={() => {
+        if (!onOpen) return;
+        hoverTimerRef.current = window.setTimeout(onOpen, 350);
+      }}
+      onMouseLeave={() => {
+        if (hoverTimerRef.current !== null) window.clearTimeout(hoverTimerRef.current);
+        hoverTimerRef.current = null;
+      }}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (onOpen && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+      className={`grid h-64 place-items-center overflow-hidden border-b border-[#e3e8e4] bg-[#f1f3ef] p-3 ${onOpen ? "cursor-zoom-in outline-none focus-visible:ring-2 focus-visible:ring-[#1f6b4f]" : ""}`}
+    >
       {!visible && <LoaderCircle className="animate-spin text-[#84918a]" size={22} />}
       {error
         ? <p className="px-4 text-center text-xs text-[#8a5d22]">미리보기를 불러오지 못했습니다.<br />PC 폴더 권한을 확인해 주세요.</p>
         : <canvas ref={canvasRef} className={`max-h-full max-w-full bg-white shadow-sm ${visible ? "block" : "hidden"}`} />}
+    </div>
+  );
+}
+
+function FullQuestionPreview({ card, onClose }: { card: LocalQuestionCardSummary; onClose: () => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (canvasRef.current) {
+      void renderQuestionCardPreview(card, canvasRef.current, 2.25).catch(() => {
+        setError("전체 문항 미리보기를 불러오지 못했습니다.");
+      });
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [card, onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[70] grid place-items-center bg-[#0b1c15]/65 p-4" role="presentation" onMouseDown={onClose}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="question-preview-title"
+        onMouseDown={(event) => event.stopPropagation()}
+        className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+      >
+        <header className="flex items-start justify-between gap-4 border-b border-[#e3e8e4] px-5 py-4">
+          <div>
+            <h2 id="question-preview-title" className="text-lg font-bold">{card.sourceQuestionNumber ? `${card.sourceQuestionNumber}번 문항` : "문항 전체 미리보기"}</h2>
+            <p className="mt-1 text-xs text-[#6d7772]">{card.sourceName}</p>
+          </div>
+          <button type="button" aria-label="미리보기 닫기" className="rounded-lg p-2 hover:bg-[#f2f4f1]" onClick={onClose}><X size={20} /></button>
+        </header>
+        <div className="min-h-0 flex-1 overflow-auto bg-[#eef1ee] p-5 text-center">
+          {error ? <p className="rounded-xl bg-white p-5 text-sm text-[#8a5d22]">{error}</p> : <canvas ref={canvasRef} className="mx-auto max-w-full bg-white shadow" />}
+        </div>
+      </section>
     </div>
   );
 }
@@ -630,6 +743,7 @@ function QuestionCards() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [previewCard, setPreviewCard] = useState<LocalQuestionCardSummary | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1131,7 +1245,7 @@ function QuestionCards() {
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
       {filtered.map((card) => (
         <article key={card.id} className="overflow-hidden rounded-2xl border border-[#e3e8e4] bg-white transition hover:-translate-y-0.5 hover:shadow-lg">
-          <QuestionCardPreview card={card} />
+          <QuestionCardPreview card={card} onOpen={() => setPreviewCard(card)} />
           <div className="p-4">
             <div className="flex items-start justify-between gap-3">
               <label className="flex min-w-0 items-center gap-2 font-semibold">
@@ -1148,6 +1262,12 @@ function QuestionCards() {
               <Heart size={16} className="shrink-0 text-[#6d7772]" />
             </div>
             <p className="mt-2 truncate text-xs text-[#6d7772]" title={card.sourceName}>{card.sourceName}</p>
+            {((card.answerRegions?.length ?? 0) > 0 || (card.explanationRegions?.length ?? 0) > 0) && (
+              <div className="mt-2 flex gap-1.5">
+                {(card.answerRegions?.length ?? 0) > 0 && <span className="rounded-full bg-[#e8f2ff] px-2 py-1 text-[10px] font-semibold text-[#245f98]">정답 있음</span>}
+                {(card.explanationRegions?.length ?? 0) > 0 && <span className="rounded-full bg-[#f2ebfb] px-2 py-1 text-[10px] font-semibold text-[#6f4799]">해설 있음</span>}
+              </div>
+            )}
             {card.classification ? (
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {classificationLabels(card).slice(0, 5).map((label, index) => (
@@ -1228,6 +1348,7 @@ function QuestionCards() {
         </article>
       ))}
     </div>
+    {previewCard && <FullQuestionPreview card={previewCard} onClose={() => setPreviewCard(null)} />}
   </>;
 }
 
@@ -1438,6 +1559,8 @@ function ExamSets() {
       setExportMessage(`${index + 1}/${selectedCards.length}번 문항을 PDF에 배치하고 있습니다.`);
       questions.push({
         canvas: await renderQuestionCardCanvas(card, null),
+        solutionCanvas: await renderQuestionSolutionCanvas(card),
+        label: `${index + 1}번`,
         score: Math.max(1, scores[card.id] ?? 2),
       });
     }
@@ -1497,6 +1620,7 @@ function ExamSets() {
       if (!headerResponse.ok) throw new Error("HWPX 기본 템플릿을 불러오지 못했습니다.");
       const headerXml = await headerResponse.text();
       const questions: HwpxQuestionImage[] = [];
+      const solutions: HwpxQuestionImage[] = [];
       for (let index = 0; index < selectedCards.length; index += 1) {
         const card = selectedCards[index];
         setExportMessage(`${index + 1}/${selectedCards.length}번 문항 이미지를 만들고 있습니다.`);
@@ -1509,6 +1633,14 @@ function ExamSets() {
             : `${index + 1}번 문항`,
           score,
         });
+        const solutionCanvas = await renderQuestionSolutionCanvas(card);
+        if (solutionCanvas) {
+          solutions.push({
+            ...await canvasToPng(solutionCanvas),
+            label: `${index + 1}번 정답 및 해설`,
+            score: 0,
+          });
+        }
       }
 
       setExportMessage("HWPX 패키지를 조립하고 있습니다.");
@@ -1525,6 +1657,7 @@ function ExamSets() {
         showScores,
         headerXml,
         questions,
+        solutions,
       });
       const stamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
       const result = await saveGeneratedHwpxLocally(`${title}_${stamp}.hwpx`, data);

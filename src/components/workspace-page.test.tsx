@@ -138,6 +138,30 @@ describe("WorkspacePage local storage UI", () => {
     expect(pushMock).toHaveBeenCalledWith("/exam-sets");
   });
 
+  it("opens a full preview and shows answer and explanation availability", async () => {
+    vi.mocked(listLocalQuestionCards).mockResolvedValueOnce([{
+      id: "doc-1:q-1",
+      documentId: "doc-1",
+      questionKey: "q-1",
+      sourceQuestionNumber: "1",
+      sourceName: "한국사.pdf",
+      updatedAt: "2026-07-25T00:00:00.000Z",
+      classification: null,
+      regions: [{ pageNumber: 1, xRatio: 0.05, yRatio: 0.1, widthRatio: 0.4, heightRatio: 0.3, sortOrder: 0 }],
+      answerRegions: [{ pageNumber: 1, xRatio: 0.05, yRatio: 0.42, widthRatio: 0.4, heightRatio: 0.05, sortOrder: 0 }],
+      explanationRegions: [{ pageNumber: 1, xRatio: 0.05, yRatio: 0.48, widthRatio: 0.4, heightRatio: 0.2, sortOrder: 0 }],
+    }]);
+
+    render(<WorkspacePage view="questions" />);
+    expect(await screen.findByText("정답 있음")).toBeInTheDocument();
+    expect(screen.getByText("해설 있음")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "1번 문항 전체 미리보기" }));
+    expect(screen.getByRole("dialog", { name: "1번 문항" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "미리보기 닫기" }));
+    expect(screen.queryByRole("dialog", { name: "1번 문항" })).not.toBeInTheDocument();
+  });
+
   it("filters question cards by multiple categories and difficulties", async () => {
     const categoryIds = [
       "category-history-1-1",

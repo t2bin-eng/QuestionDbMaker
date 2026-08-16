@@ -1,5 +1,7 @@
 export interface ExamPdfQuestion {
   canvas: HTMLCanvasElement;
+  solutionCanvas?: HTMLCanvasElement | null;
+  label?: string;
   score: number;
 }
 
@@ -194,6 +196,84 @@ function drawGrid(context: CanvasRenderingContext2D, slots: PdfQuestionSlot[], q
   context.restore();
 }
 
+function createSolutionPages(questions: ExamPdfQuestion[], firstPageNumber: number) {
+  const solutions = questions.filter((question) => question.solutionCanvas);
+  if (!solutions.length) return [];
+  const pages: HTMLCanvasElement[] = [];
+  const columnWidth = (PAGE_WIDTH - PAGE_MARGIN_X * 2 - COLUMN_GAP) / 2;
+  const contentTop = 178;
+  const contentBottom = PAGE_HEIGHT - FOOTER_HEIGHT - 28;
+  let pageCanvas: HTMLCanvasElement;
+  let context: CanvasRenderingContext2D;
+  let column = 0;
+  let top = contentTop;
+
+  const startPage = () => {
+    pageCanvas = document.createElement("canvas");
+    pageCanvas.width = PAGE_WIDTH;
+    pageCanvas.height = PAGE_HEIGHT;
+    const nextContext = pageCanvas.getContext("2d");
+    if (!nextContext) throw new Error("정답·해설 페이지를 만들지 못했습니다.");
+    context = nextContext;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, PAGE_WIDTH, PAGE_HEIGHT);
+    context.fillStyle = "#1f6b4f";
+    context.fillRect(PAGE_WIDTH / 2 - 42, 48, 84, 7);
+    drawCenteredText(context, "정답 및 해설", 103, '700 48px "Malgun Gothic", "Noto Sans KR", sans-serif');
+    context.strokeStyle = "#1f6b4f";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(PAGE_MARGIN_X, 148);
+    context.lineTo(PAGE_WIDTH - PAGE_MARGIN_X, 148);
+    context.stroke();
+    column = 0;
+    top = contentTop;
+  };
+
+  const finishPage = () => {
+    drawCenteredText(
+      context,
+      `- ${firstPageNumber + pages.length} -`,
+      PAGE_HEIGHT - 34,
+      '500 18px "Malgun Gothic", "Noto Sans KR", sans-serif',
+      "#7a8580",
+    );
+    pages.push(pageCanvas);
+  };
+
+  startPage();
+  solutions.forEach((question, index) => {
+    const solution = question.solutionCanvas!;
+    const labelHeight = 38;
+    const availableHeight = contentBottom - contentTop - labelHeight;
+    const scale = Math.min(columnWidth / solution.width, availableHeight / solution.height, 1);
+    const drawWidth = solution.width * scale;
+    const drawHeight = solution.height * scale;
+    const blockHeight = labelHeight + drawHeight + 28;
+
+    if (top + blockHeight > contentBottom) {
+      if (column === 0) {
+        column = 1;
+        top = contentTop;
+      } else {
+        finishPage();
+        startPage();
+      }
+    }
+
+    const left = PAGE_MARGIN_X + column * (columnWidth + COLUMN_GAP);
+    context.fillStyle = "#24312b";
+    context.font = '700 22px "Malgun Gothic", "Noto Sans KR", sans-serif';
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillText(question.label || `${index + 1}번`, left, top + labelHeight / 2);
+    context.drawImage(solution, left, top + labelHeight, drawWidth, drawHeight);
+    top += blockHeight;
+  });
+  finishPage();
+  return pages;
+}
+
 export async function createExamPdf(options: ExamPdfOptions) {
   if (!options.questions.length) throw new Error("PDF에 넣을 문항이 없습니다.");
   const { jsPDF } = await import("jspdf");
@@ -232,6 +312,12 @@ export async function createExamPdf(options: ExamPdfOptions) {
       '500 18px "Malgun Gothic", "Noto Sans KR", sans-serif',
       "#7a8580",
     );
+    pdf.addImage(pageCanvas.toDataURL("image/jpeg", 0.94), "JPEG", 0, 0, PAGE_WIDTH, PAGE_HEIGHT, undefined, "FAST");
+  }
+
+  const solutionPages = createSolutionPages(options.questions, pageCount + 1);
+  for (const pageCanvas of solutionPages) {
+    pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT], "portrait");
     pdf.addImage(pageCanvas.toDataURL("image/jpeg", 0.94), "JPEG", 0, 0, PAGE_WIDTH, PAGE_HEIGHT, undefined, "FAST");
   }
 

@@ -1,7 +1,7 @@
 import type { EditableRegion } from "./question-detection";
 import type { PdfInspectionSummary } from "./pdf-inspector-client";
 
-export const QUESTION_DETECTION_ALGORITHM_VERSION = "2026-08-layout-v3";
+export const QUESTION_DETECTION_ALGORITHM_VERSION = "2026-08-layout-v4-answer-explanation";
 
 export interface TrainingRegion {
   id: string;
@@ -12,6 +12,7 @@ export interface TrainingRegion {
   yRatio: number;
   widthRatio: number;
   heightRatio: number;
+  regionType: EditableRegion["regionType"];
   sortOrder: number;
   status: EditableRegion["status"];
   detectionConfidence?: number;
@@ -49,6 +50,7 @@ function toTrainingRegion(region: EditableRegion): TrainingRegion {
     yRatio: region.yRatio,
     widthRatio: region.widthRatio,
     heightRatio: region.heightRatio,
+    regionType: region.regionType,
     sortOrder: region.sortOrder,
     status: region.status,
     detectionConfidence: region.detectionConfidence,

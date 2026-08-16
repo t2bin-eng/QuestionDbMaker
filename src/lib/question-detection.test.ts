@@ -239,7 +239,7 @@ describe("question detection", () => {
       ],
     }]);
 
-    const questionTwo = regions.filter((region) => region.questionNumber === "2");
+    const questionTwo = regions.filter((region) => region.questionNumber === "2" && region.regionType === "question");
     expect(questionTwo).toHaveLength(2);
     expect(questionTwo.map((region) => region.pageNumber)).toEqual([1, 1]);
     expect(questionTwo[1].xRatio).toBeGreaterThan(0.5);
@@ -263,7 +263,9 @@ describe("question detection", () => {
       ],
     }]);
 
-    expect(regions.filter((region) => region.questionNumber === "7")).toHaveLength(1);
+    expect(regions.filter((region) => region.questionNumber === "7" && region.regionType === "question")).toHaveLength(1);
+    expect(regions.filter((region) => region.questionNumber === "7" && region.regionType === "answer")).toHaveLength(1);
+    expect(regions.filter((region) => region.questionNumber === "7" && region.regionType === "explanation")).toHaveLength(1);
   });
 
   it("keeps choices near the page footer inside the source region", () => {
@@ -316,7 +318,7 @@ describe("question detection", () => {
       },
     ]);
 
-    const questionThree = regions.filter((region) => region.questionNumber === "3");
+    const questionThree = regions.filter((region) => region.questionNumber === "3" && region.regionType === "question");
     expect(questionThree).toHaveLength(2);
     expect(questionThree.map((region) => region.pageNumber)).toEqual([1, 2]);
     expect(questionThree[1].xRatio).toBeLessThan(0.1);
@@ -384,6 +386,33 @@ describe("question detection", () => {
     expect(questionOne).toHaveLength(2);
     expect(questionOne[1].pageNumber).toBe(2);
     expect(questionOne[1].heightRatio).toBeGreaterThan(0.3);
+  });
+
+  it("links answer and explanation regions to the preceding question", () => {
+    const regions = detectDocumentQuestionRegions([{
+      pageNumber: 1,
+      pageWidth: 600,
+      pageHeight: 800,
+      fragments: [
+        { text: "1. 옳은 것은?", x: 25, y: 100, width: 100, height: 10 },
+        { text: "① 선택지", x: 25, y: 180, width: 60, height: 9 },
+        { text: "정답 ①", x: 25, y: 245, width: 60, height: 9 },
+        { text: "해설", x: 25, y: 285, width: 25, height: 9 },
+        { text: "정답의 근거가 되는 설명", x: 25, y: 320, width: 150, height: 9 },
+        { text: "2. 적절한 것은?", x: 25, y: 430, width: 110, height: 10 },
+        { text: "① 선택지", x: 25, y: 500, width: 60, height: 9 },
+      ],
+    }]);
+
+    const firstQuestionRegions = regions.filter((region) => region.questionNumber === "1");
+    expect(firstQuestionRegions.map((region) => region.regionType)).toEqual([
+      "question",
+      "answer",
+      "explanation",
+    ]);
+    expect(new Set(firstQuestionRegions.map((region) => region.questionKey)).size).toBe(1);
+    expect(firstQuestionRegions.find((region) => region.regionType === "question")!.heightRatio)
+      .toBeLessThan(firstQuestionRegions.find((region) => region.regionType === "answer")!.yRatio);
   });
 
   it("marks image-only pages as not extractable", () => {

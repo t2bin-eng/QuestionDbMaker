@@ -24,9 +24,10 @@ import {
   type PdfVisualElement,
 } from "@/lib/question-detection";
 import { buildReviewTrainingSample } from "@/lib/review-training";
+import type { RegionType } from "@/types/domain";
 
 interface ReviewDraft {
-  version: 1 | 2 | 3 | 4 | 5 | 6;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   documentId: string;
   fileName?: string;
   pageCount: number;
@@ -59,6 +60,16 @@ const pdfTypeLabels: Record<PdfInspectionSummary["pdfType"], string> = {
   Scanned: "스캔 PDF",
   ImageBased: "이미지 PDF",
   Mixed: "텍스트·스캔 혼합",
+};
+const regionTypeLabels: Record<RegionType, string> = {
+  question: "문제",
+  answer: "정답",
+  explanation: "해설",
+};
+const regionTypeStyles: Record<RegionType, { border: string; fill: string; label: string }> = {
+  question: { border: "border-[#146c4a]", fill: "bg-[#2a9a6b]/15", label: "bg-[#146c4a]" },
+  answer: { border: "border-[#2563a8]", fill: "bg-[#3b82c4]/15", label: "bg-[#2563a8]" },
+  explanation: { border: "border-[#7650a6]", fill: "bg-[#8b5fb5]/15", label: "bg-[#7650a6]" },
 };
 
 async function renderPageToCanvas(page: PDFPageProxy, canvas: HTMLCanvasElement, scale: number) {
@@ -216,6 +227,7 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [mode, setMode] = useState<DrawMode>("select");
+  const [drawRegionType, setDrawRegionType] = useState<RegionType>("question");
   const [drawPreview, setDrawPreview] = useState<Pick<EditableRegion, "xRatio" | "yRatio" | "widthRatio" | "heightRatio"> | null>(null);
   const [undoStack, setUndoStack] = useState<EditableRegion[][]>([]);
   const [redoStack, setRedoStack] = useState<EditableRegion[][]>([]);
@@ -283,8 +295,15 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
         const draft = await readReviewDraftLocally<ReviewDraft>(documentId);
         const hasManualReview = draft?.regions.some((region) => region.status !== "auto_detected");
         if (draft?.regions.length && (draft.version >= 5 || hasManualReview)) {
-          setRegions(draft.regions);
-          automaticRegionsRef.current = (draft.automaticRegions ?? draft.regions).map((region) => ({ ...region }));
+          const compatibleRegions = draft.regions.map((region) => ({
+            ...region,
+            regionType: region.regionType ?? "question" as const,
+          }));
+          setRegions(compatibleRegions);
+          automaticRegionsRef.current = (draft.automaticRegions ?? compatibleRegions).map((region) => ({
+            ...region,
+            regionType: region.regionType ?? "question" as const,
+          }));
           if (draft.inspection) {
             setInspection(draft.inspection);
             inspectionRef.current = draft.inspection;
@@ -412,8 +431,10 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
           questionNumber: selected?.questionNumber ?? null,
           pageNumber,
           ...drawPreview,
-          regionType: "question",
-          sortOrder: regions.length,
+          regionType: drawRegionType,
+          sortOrder: regions.filter((region) =>
+            region.questionKey === (selected?.questionKey ?? "") && region.regionType === drawRegionType,
+          ).length,
           status: "needs_review",
         };
         commit([...regions, newRegion]);
@@ -452,7 +473,7 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
     setSaving(true);
     try {
       const draft: ReviewDraft = {
-        version: 6,
+        version: 7,
         documentId,
         fileName,
         pageCount: pdf.numPages,
@@ -514,8 +535,11 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
   }
 
   const pageRegions = regions.filter((region) => region.pageNumber === pageNumber);
-  const groupedQuestions = Array.from(new Map(regions.map((region) => [region.questionKey, region])).values());
+  const groupedQuestions = Array.from(new Map(
+    regions.filter((region) => region.regionType === "question").map((region) => [region.questionKey, region]),
+  ).values());
   const pendingReviewCount = regions.filter((region) => region.status !== "reviewed").length;
+  const selectedRegion = regions.find((region) => region.id === selectedId) ?? null;
 
   return (
     <div className="min-h-screen bg-[#edf0ed] text-[#17211d]">
@@ -528,8 +552,23 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
         <button onClick={() => pdf && void runDetection(pdf)} disabled={!pdf || detecting} className={buttonClass}>
           {detecting ? <LoaderCircle className="animate-spin" size={16} /> : <ScanSearch size={16} />}자동 탐지 재실행
         </button>
-        <button onClick={() => setMode(mode === "add" ? "select" : "add")} className={mode === "add" ? primaryButtonClass : buttonClass}>
-          <Plus size={16} />영역 추가
+        <select
+          aria-label="추가할 영역 유형"
+          value={drawRegionType}
+          onChange={(event) => setDrawRegionType(event.target.value as RegionType)}
+          className={buttonClass}
+        >
+          <option value="question">문제 영역</option>
+          <option value="answer">정답 영역</option>
+          <option value="explanation">해설 영역</option>
+        </select>
+        <button
+          onClick={() => setMode(mode === "add" ? "select" : "add")}
+          disabled={drawRegionType !== "question" && !selectedRegion}
+          className={mode === "add" ? primaryButtonClass : buttonClass}
+          title={drawRegionType !== "question" && !selectedRegion ? "먼저 연결할 문항 영역을 선택하세요." : undefined}
+        >
+          <Plus size={16} />{regionTypeLabels[drawRegionType]} 영역 추가
         </button>
         <button onClick={deleteSelected} disabled={!selectedId} className={buttonClass}><Trash2 size={16} />삭제</button>
         <button onClick={undo} disabled={!undoStack.length} className={buttonClass} aria-label="실행 취소"><Undo2 size={16} /></button>
@@ -585,11 +624,12 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
               {pageRegions.map((region) => {
                 const selected = selectedId === region.id;
                 const reviewed = region.status === "reviewed";
+                const palette = regionTypeStyles[region.regionType];
                 return (
                   <div
                     key={region.id}
                     onPointerDown={(event) => startRegionInteraction(event, region, "move")}
-                    className={`absolute border-2 ${selected ? "z-20" : "z-10"} ${selected || reviewed ? "border-[#146c4a] bg-[#2a9a6b]/15" : "border-[#e08a23] bg-[#f5a63c]/10 hover:bg-[#f5a63c]/20"}`}
+                    className={`absolute border-2 ${selected ? "z-20" : "z-10"} ${palette.border} ${selected || reviewed ? palette.fill : "bg-[#f5a63c]/10 hover:bg-[#f5a63c]/20"}`}
                     style={{
                       left: `${region.xRatio * 100}%`,
                       top: `${region.yRatio * 100}%`,
@@ -597,8 +637,8 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
                       height: `${region.heightRatio * 100}%`,
                     }}
                   >
-                    <span className={`absolute -top-6 left-[-2px] rounded-t-md px-2 py-1 text-[10px] font-bold text-white ${selected || reviewed ? "bg-[#146c4a]" : "bg-[#d37b14]"}`}>
-                      {region.questionNumber ? `${region.questionNumber}번` : "새 문항"} · {region.status === "reviewed" ? "검수 완료" : "검수 필요"}
+                    <span className={`absolute -top-6 left-[-2px] rounded-t-md px-2 py-1 text-[10px] font-bold text-white ${selected || reviewed ? palette.label : "bg-[#d37b14]"}`}>
+                      {region.questionNumber ? `${region.questionNumber}번` : "새 문항"} · {regionTypeLabels[region.regionType]} · {region.status === "reviewed" ? "검수 완료" : "검수 필요"}
                     </span>
                     {selected && (
                       <button
@@ -652,7 +692,7 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
                 className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left transition ${selectedId === region.id ? "border-[#1f6b4f] bg-[#eaf3ee]" : "border-[#e1e6e3] hover:bg-[#f7f9f7]"}`}
               >
                 <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-white font-mono text-xs shadow-sm">{region.questionNumber ?? index + 1}</span>
-                <span className="min-w-0 flex-1"><b className="block text-sm">문항 영역</b><small className="text-[#6b7771]">{region.pageNumber}쪽 · 영역 {region.sortOrder + 1}</small></span>
+                <span className="min-w-0 flex-1"><b className="block text-sm">{regionTypeLabels[region.regionType]} 영역</b><small className="text-[#6b7771]">{region.pageNumber}쪽 · 영역 {region.sortOrder + 1}</small></span>
                 {region.status === "reviewed" ? <Check size={16} className="text-[#1f6b4f]" /> : <Minus size={16} className="text-[#cf7b18]" />}
               </button>
             ))}
@@ -660,7 +700,24 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
           {!regions.length && !loading && <div className="mt-5 rounded-xl border border-dashed border-[#ccd6d0] p-6 text-center text-sm text-[#6b7771]">탐지된 영역이 없습니다.<br />상단의 영역 추가를 사용하세요.</div>}
           <div className="sticky bottom-4 mt-5 space-y-2 rounded-2xl border border-[#dfe5e1] bg-[#f8faf8] p-4">
             <h3 className="text-sm font-bold">선택 영역</h3>
-            <p className="text-xs leading-5 text-[#6b7771]">영역을 드래그해 이동하고 오른쪽 아래 점으로 크기를 조절합니다. 다른 페이지에서 영역 추가를 누르면 선택한 문항에 연결됩니다.</p>
+            <p className="text-xs leading-5 text-[#6b7771]">영역을 드래그해 이동하고 오른쪽 아래 점으로 크기를 조절합니다. 정답·해설을 추가할 때는 먼저 연결할 문항을 선택하세요.</p>
+            <label className="block text-xs font-semibold text-[#53615a]">영역 종류
+              <select
+                disabled={!selectedRegion}
+                value={selectedRegion?.regionType ?? "question"}
+                onChange={(event) => {
+                  const regionType = event.target.value as RegionType;
+                  commit(regions.map((region) => region.id === selectedId
+                    ? { ...region, regionType, status: "needs_review" }
+                    : region));
+                }}
+                className="mt-1 w-full rounded-lg border border-[#dce3df] bg-white px-3 py-2 text-sm"
+              >
+                <option value="question">문제</option>
+                <option value="answer">정답</option>
+                <option value="explanation">해설</option>
+              </select>
+            </label>
             <button onClick={markReviewed} disabled={!selectedId} className={`${primaryButtonClass} w-full`}><Check size={16} />이 영역 검수 완료</button>
             <button onClick={() => void markAllReviewed()} disabled={!pendingReviewCount || saving} className={`${primaryButtonClass} w-full`}><CheckCheck size={16} />일괄 검수 완료</button>
             <button onClick={() => pdf && void runDetection(pdf)} disabled={!pdf || detecting} className={`${buttonClass} w-full`}><RotateCcw size={16} />현재 제안 초기화</button>

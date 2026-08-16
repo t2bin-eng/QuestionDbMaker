@@ -1,4 +1,5 @@
 import type { ReviewTrainingSample } from "./review-training";
+import type { RegionType } from "@/types/domain";
 import {
   createDatabaseBackupArchive,
   parseDatabaseBackupArchive,
@@ -95,14 +96,19 @@ export interface LocalQuestionCardSummary {
   sourceName: string;
   updatedAt: string;
   classification: QuestionClassification | null;
-  regions: Array<{
+  regions: LocalQuestionRegionSummary[];
+  answerRegions?: LocalQuestionRegionSummary[];
+  explanationRegions?: LocalQuestionRegionSummary[];
+}
+
+export interface LocalQuestionRegionSummary {
     pageNumber: number;
     xRatio: number;
     yRatio: number;
     widthRatio: number;
     heightRatio: number;
     sortOrder: number;
-  }>;
+    regionType?: RegionType;
 }
 
 export interface QuestionClassification {
@@ -146,6 +152,7 @@ interface StoredReviewDraft {
     widthRatio?: number;
     heightRatio?: number;
     sortOrder?: number;
+    regionType?: RegionType;
     status?: "auto_detected" | "needs_review" | "reviewed";
   }>;
 }
@@ -834,9 +841,13 @@ export async function listLocalQuestionCards(): Promise<LocalQuestionCardSummary
           widthRatio: region.widthRatio!,
           heightRatio: region.heightRatio!,
           sortOrder: region.sortOrder ?? 0,
+          regionType: region.regionType ?? "question",
         }))
         .sort((a, b) => a.sortOrder - b.sortOrder || a.pageNumber - b.pageNumber);
-      if (!validRegions.length) continue;
+      const questionRegions = validRegions.filter((region) => region.regionType === "question");
+      const answerRegions = validRegions.filter((region) => region.regionType === "answer");
+      const explanationRegions = validRegions.filter((region) => region.regionType === "explanation");
+      if (!questionRegions.length) continue;
 
       const id = `${documentId}:${questionKey}`;
       documentCards.push({
@@ -847,7 +858,9 @@ export async function listLocalQuestionCards(): Promise<LocalQuestionCardSummary
         sourceName: metadata?.fileName ?? draft.fileName ?? "source.pdf",
         updatedAt: draft.savedAt ?? metadata?.createdAt ?? "",
         classification: questionClassifications[id] ?? null,
-        regions: validRegions,
+        regions: questionRegions,
+        answerRegions,
+        explanationRegions,
       });
     }
 
