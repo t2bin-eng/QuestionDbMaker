@@ -86,6 +86,19 @@ describe("question detection", () => {
     expect(regions[1].xRatio).toBeGreaterThan(0.5);
   });
 
+  it("keeps a wider safety margin around left-column content", () => {
+    const regions = detectQuestionRegions([
+      { text: "19. 옳은 것은?", x: 20, y: 110, width: 100, height: 10 },
+      { text: "⑤ 오른쪽 끝의 긴 선택지", x: 22, y: 210, width: 270, height: 9 },
+      { text: "20. 다음 문제", x: 320, y: 130, width: 100, height: 10 },
+    ], 1, 600, 800);
+
+    const left = regions.find((region) => region.questionNumber === "19")!;
+    expect(left.xRatio * 600).toBeLessThanOrEqual(6);
+    expect((left.xRatio + left.widthRatio) * 600).toBeGreaterThan(300);
+    expect((left.xRatio + left.widthRatio) * 600).toBeLessThan(320);
+  });
+
   it("uses text density to keep a page two-column when only one marker is found", () => {
     const fragments = [
       { text: "15.", x: 25, y: 360, width: 14, height: 9 },

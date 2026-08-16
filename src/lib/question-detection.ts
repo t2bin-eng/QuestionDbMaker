@@ -382,22 +382,34 @@ function regionsFromAnalyzedPage(page: ReturnType<typeof analyzePageLayout>): Ed
 
   if (!markers.length) return [];
 
-  const columnGap = pageWidth * 0.025;
+  const rightColumnStarts = lines.filter((line) => columnOf(line) === 1).map((line) => line.x);
+  const rightColumnAnchor = hasTwoColumns
+    ? rightColumnStarts.length
+      ? Math.min(...rightColumnStarts)
+      : Math.min(pageWidth, split + pageWidth * 0.04)
+    : pageWidth;
+  const horizontalBounds = (column: number, markerX?: number) => {
+    const columnLeft = column === 1 ? split : 0;
+    const columnRight = hasTwoColumns && column === 0 ? rightColumnAnchor : pageWidth;
+    const edgeInset = 4;
+    return {
+      left: Math.max(columnLeft + edgeInset, markerX === undefined ? columnLeft + edgeInset : markerX - 14),
+      right: columnRight - (hasTwoColumns && column === 0 ? 15 : edgeInset),
+    };
+  };
 
   return markers.map(({ line, match, score }, index) => {
     const column = columnOf(line);
     const next = markers
       .filter(({ line: candidate }) => candidate.y > line.y && columnOf(candidate) === column)
       .sort((a, b) => a.line.y - b.line.y)[0];
-    const columnLeft = column === 1 ? split : 0;
-    const columnRight = hasTwoColumns && column === 0 ? split - columnGap : pageWidth;
-    const left = Math.max(columnLeft + 10, line.x - 10);
+    const { left, right } = horizontalBounds(column, line.x);
     const top = Math.max(8, line.y - 8);
     const structuralBoundary = lines.find((candidate) =>
       candidate.y > line.y + line.height &&
       candidate.y < (next?.line.y ?? contentBottom) &&
       columnOf(candidate) === column &&
-      candidate.x < columnRight - pageWidth * 0.08 &&
+      candidate.x < right - pageWidth * 0.08 &&
       SECTION_BOUNDARY.test(candidate.text),
     );
     const bottom = Math.min(
@@ -414,7 +426,7 @@ function regionsFromAnalyzedPage(page: ReturnType<typeof analyzePageLayout>): Ed
       pageNumber,
       xRatio: clamp(left / pageWidth),
       yRatio: clamp(top / pageHeight),
-      widthRatio: clamp((columnRight - left - 10) / pageWidth, 0.04),
+      widthRatio: clamp((right - left) / pageWidth, 0.04),
       heightRatio: clamp((Math.max(bottom, top + line.height + 20) - top) / pageHeight, 0.025),
       regionType: "question",
       sortOrder: 0,
@@ -555,15 +567,25 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
       });
 
       if (bottom - top >= page.pageHeight * 0.025 && (meaningfulLines.length || meaningfulVisuals.length)) {
-        const left = column === 1 ? page.split + 10 : 10;
-        const right = page.twoColumns && column === 0 ? page.split - page.pageWidth * 0.025 : page.pageWidth;
+        const rightColumnStarts = page.lines
+          .filter((line) => page.columnOf(line) === 1)
+          .map((line) => line.x);
+        const rightColumnAnchor = page.twoColumns
+          ? rightColumnStarts.length
+            ? Math.min(...rightColumnStarts)
+            : Math.min(page.pageWidth, page.split + page.pageWidth * 0.04)
+          : page.pageWidth;
+        const columnLeft = column === 1 ? page.split : 0;
+        const columnRight = page.twoColumns && column === 0 ? rightColumnAnchor : page.pageWidth;
+        const left = column === 1 ? Math.max(columnLeft + 4, rightColumnAnchor - 14) : 4;
+        const right = columnRight - (page.twoColumns && column === 0 ? 15 : 4);
         allRegions.push({
           ...source,
           id: crypto.randomUUID(),
           pageNumber: page.pageNumber,
           xRatio: clamp(left / page.pageWidth),
           yRatio: clamp(top / page.pageHeight),
-          widthRatio: clamp((right - left - 10) / page.pageWidth, 0.04),
+          widthRatio: clamp((right - left) / page.pageWidth, 0.04),
           heightRatio: clamp((bottom - top) / page.pageHeight, 0.025),
           sortOrder: continuationOrder,
           detectionReasons: [
@@ -612,15 +634,22 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
     });
     if (!meaningfulLines.length && !meaningfulVisuals.length) return;
 
-    const columnGap = page.pageWidth * 0.025;
+    const rightColumnStarts = page.lines
+      .filter((line) => page.columnOf(line) === 1)
+      .map((line) => line.x);
+    const rightColumnAnchor = page.twoColumns
+      ? rightColumnStarts.length
+        ? Math.min(...rightColumnStarts)
+        : Math.min(page.pageWidth, page.split + page.pageWidth * 0.04)
+      : page.pageWidth;
     const columnLeft = column === 1 ? page.split : 0;
     const columnRight = page.twoColumns && column === 0
-      ? page.split - columnGap
+      ? rightColumnAnchor
       : page.pageWidth;
-    const left = Math.max(columnLeft + 10, Math.min(
-      ...meaningfulLines.map((line) => line.x - 8),
-      columnLeft + 10,
-    ));
+    const contentLeft = meaningfulLines.length
+      ? Math.min(...meaningfulLines.map((line) => line.x - 14))
+      : columnLeft + 4;
+    const left = Math.max(columnLeft + 4, contentLeft);
     const orderKey = `${currentQuestion.questionKey}:${type}`;
     const sortOrder = supplementaryOrder.get(orderKey) ?? 0;
     supplementaryOrder.set(orderKey, sortOrder + 1);
@@ -631,7 +660,7 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
       pageNumber: page.pageNumber,
       xRatio: clamp(left / page.pageWidth),
       yRatio: clamp(Math.max(8, start) / page.pageHeight),
-      widthRatio: clamp((columnRight - left - 10) / page.pageWidth, 0.04),
+      widthRatio: clamp((columnRight - (page.twoColumns && column === 0 ? 15 : 4) - left) / page.pageWidth, 0.04),
       heightRatio: clamp((Math.min(page.contentBottom, end) - Math.max(8, start)) / page.pageHeight, 0.02),
       regionType: type,
       sortOrder,
@@ -667,7 +696,7 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
           region.pageNumber === page.pageNumber &&
           region.questionNumber === marker.match[1] &&
           Math.abs(region.yRatio * page.pageHeight - (marker.line.y - 8)) < 3 &&
-          Math.abs(region.xRatio * page.pageWidth - Math.max((column === 1 ? page.split : 0) + 10, marker.line.x - 10)) < 3,
+          Math.abs(region.xRatio * page.pageWidth - Math.max((column === 1 ? page.split : 0) + 4, marker.line.x - 14)) < 3,
         );
         currentQuestion = markerRegion ?? null;
         activeSupplement = null;

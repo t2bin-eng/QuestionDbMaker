@@ -206,6 +206,50 @@ const DEFAULT_OPTIONS: ClassificationOption[] = [
   { id: "type-written", kind: "questionType", name: "서술형", sortOrder: 1, isActive: true },
 ];
 
+const LEGACY_MIDDLE_CATEGORY_ALIASES = new Map([
+  ["경제성장과사회변화", "산업화의성과와사회·환경문제"],
+  ["문화변동과일상생활", "산업화의성과와사회·환경문제"],
+  ["6월민주항쟁이후민주화과정", "6월민주항쟁이후의민주화"],
+  ["외환위기의극복과사회·문화변동", "외환위기극복과사회·문화의변동"],
+  ["한반도분단극복과동아시아의평화를위한노력", "한반도평화와동아시아공존을위한노력"],
+]);
+
+function normalizedCategoryName(name: string) {
+  return name.replace(/\s/g, "");
+}
+
+function cleanMergedCategories(categories: CategoryDefinition[]) {
+  const seen = new Map<string, CategoryDefinition>();
+  return categories.map((category) => {
+    const normalizedName = normalizedCategoryName(category.name);
+    const canonicalAliasName = category.categoryType === "middle"
+      ? LEGACY_MIDDLE_CATEGORY_ALIASES.get(normalizedName)
+      : undefined;
+    const duplicateKey = [category.subjectId, category.parentId ?? "root", category.categoryType, normalizedName].join(":");
+    const duplicate = seen.get(duplicateKey);
+    if (!duplicate) seen.set(duplicateKey, category);
+    return canonicalAliasName || duplicate
+      ? { ...category, isActive: false }
+      : category;
+  });
+}
+
+export function resolveCanonicalCategoryId(categories: CategoryDefinition[], categoryId: string) {
+  const category = categories.find((item) => item.id === categoryId);
+  if (!category || category.isActive) return categoryId;
+
+  const normalizedName = normalizedCategoryName(category.name);
+  const canonicalName = LEGACY_MIDDLE_CATEGORY_ALIASES.get(normalizedName) ?? normalizedName;
+  const canonical = categories.find((item) =>
+    item.id !== category.id &&
+    item.subjectId === category.subjectId &&
+    item.categoryType === category.categoryType &&
+    item.isActive &&
+    normalizedCategoryName(item.name) === canonicalName,
+  );
+  return canonical?.id ?? categoryId;
+}
+
 export function createDefaultClassificationData(): ClassificationData {
   const subjects: SubjectDefinition[] = DEFAULT_SUBJECTS.map((subject, sortOrder) => ({
     id: subject.id,
@@ -242,7 +286,7 @@ export function createDefaultClassificationData(): ClassificationData {
   return {
     version: 1,
     subjects,
-    categories,
+    categories: cleanMergedCategories(categories),
     tags: DEFAULT_TAGS.map((tag) => ({ ...tag })),
     options: DEFAULT_OPTIONS.map((option) => ({ ...option })),
     updatedAt: new Date().toISOString(),
@@ -343,7 +387,7 @@ export function mergeDefaultClassificationData(stored: ClassificationData): Clas
   return {
     ...stored,
     subjects,
-    categories,
+    categories: cleanMergedCategories(categories),
     tags,
     options,
     updatedAt: new Date().toISOString(),

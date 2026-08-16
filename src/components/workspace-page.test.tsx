@@ -156,6 +156,8 @@ describe("WorkspacePage local storage UI", () => {
     expect(await screen.findByText("정답 있음")).toBeInTheDocument();
     expect(screen.getByText("해설 있음")).toBeInTheDocument();
 
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "1번 문항 전체 미리보기" }));
+    expect(screen.queryByRole("dialog", { name: "1번 문항" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "1번 문항 전체 미리보기" }));
     expect(screen.getByRole("dialog", { name: "1번 문항" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "미리보기 닫기" }));

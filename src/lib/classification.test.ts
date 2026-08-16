@@ -4,6 +4,7 @@ import {
   flattenCategoryTree,
   mergeDefaultClassificationData,
   nextCategoryType,
+  resolveCanonicalCategoryId,
   type CategoryDefinition,
 } from "./classification";
 
@@ -86,6 +87,25 @@ describe("classification", () => {
       "조선의 성립과 발전",
       "조선 후기의 새로운 흐름",
     ]);
+  });
+
+  it("hides legacy middle units and resolves their saved classifications to the canonical curriculum", () => {
+    const stored = createDefaultClassificationData();
+    const major = stored.categories.find((category) => category.id === "category-history-2-2")!;
+    stored.categories.push({
+      id: "legacy-economic-growth",
+      subjectId: major.subjectId,
+      parentId: major.id,
+      categoryType: "middle",
+      name: "경제 성장과 사회 변화",
+      sortOrder: 0,
+      isActive: true,
+    });
+
+    const merged = mergeDefaultClassificationData(stored);
+    expect(merged.categories.find((category) => category.id === "legacy-economic-growth")?.isActive).toBe(false);
+    expect(resolveCanonicalCategoryId(merged.categories, "legacy-economic-growth"))
+      .toBe("category-history-2-2-middle-4");
   });
 
   it("infers the hierarchy level from the parent", () => {

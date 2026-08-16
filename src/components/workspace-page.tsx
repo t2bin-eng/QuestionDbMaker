@@ -43,6 +43,7 @@ import {
   createDefaultClassificationData,
   CATEGORY_TYPE_LABELS,
   mergeDefaultClassificationData,
+  resolveCanonicalCategoryId,
   sortByOrder,
   flattenCategoryTree,
   type ClassificationData,
@@ -355,7 +356,6 @@ function QuestionCardPreview({ card, onOpen }: { card: LocalQuestionCardSummary;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [visible, setVisible] = useState(false);
   const [error, setError] = useState(false);
-  const hoverTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -382,24 +382,12 @@ function QuestionCardPreview({ card, onOpen }: { card: LocalQuestionCardSummary;
     return () => { cancelled = true; };
   }, [card, visible]);
 
-  useEffect(() => () => {
-    if (hoverTimerRef.current !== null) window.clearTimeout(hoverTimerRef.current);
-  }, []);
-
   return (
     <div
       ref={containerRef}
       role={onOpen ? "button" : undefined}
       tabIndex={onOpen ? 0 : undefined}
       aria-label={onOpen ? `${card.sourceQuestionNumber ?? ""}번 문항 전체 미리보기` : undefined}
-      onMouseEnter={() => {
-        if (!onOpen) return;
-        hoverTimerRef.current = window.setTimeout(onOpen, 350);
-      }}
-      onMouseLeave={() => {
-        if (hoverTimerRef.current !== null) window.clearTimeout(hoverTimerRef.current);
-        hoverTimerRef.current = null;
-      }}
       onClick={onOpen}
       onKeyDown={(event) => {
         if (onOpen && (event.key === "Enter" || event.key === " ")) {
@@ -753,10 +741,20 @@ function QuestionCards() {
     ])
       .then(([result, storedClassification]) => {
         if (cancelled) return;
-        setCards(result);
-        setClassificationData(storedClassification?.version === 1
+        const mergedClassification = storedClassification?.version === 1
           ? mergeDefaultClassificationData(storedClassification)
-          : createDefaultClassificationData());
+          : createDefaultClassificationData();
+        setCards(result.map((card) => {
+          if (!card.classification?.categoryId) return card;
+          const categoryId = resolveCanonicalCategoryId(
+            mergedClassification.categories,
+            card.classification.categoryId,
+          );
+          return categoryId === card.classification.categoryId
+            ? card
+            : { ...card, classification: { ...card.classification, categoryId } };
+        }));
+        setClassificationData(mergedClassification);
       })
       .catch((reason) => {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "문항 카드를 불러오지 못했습니다.");
