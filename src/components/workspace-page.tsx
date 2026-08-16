@@ -49,6 +49,13 @@ import {
   type ClassificationData,
   type SubjectDefinition,
 } from "@/lib/classification";
+import {
+  DEFAULT_LOCAL_MODEL_SETTINGS,
+  listLocalModelIds,
+  readLocalModelSettings,
+  saveLocalModelSettings,
+  type LocalModelSettings,
+} from "@/lib/local-model-settings";
 
 type View = "dashboard" | "documents" | "questions" | "exam-sets" | "categories" | "settings";
 const EXAM_SELECTION_KEY = "question-card-studio:exam-selection";
@@ -1384,6 +1391,8 @@ function QuestionCards() {
                   <p className="mt-2 text-[10px] font-medium text-[#6d7772]" title={card.classification.autoReason}>
                     {card.classification.origin === "semantic_auto"
                       ? "브라우저 의미 분석"
+                      : card.classification.origin === "bionic_auto"
+                        ? "Bionic 원본 이미지 분석"
                       : card.classification.origin === "gemini_auto"
                         ? "이전 AI 자동 분류"
                         : "로컬 규칙 분류"}
@@ -1396,7 +1405,7 @@ function QuestionCards() {
               </>
             ) : (
               <div className="mt-3 rounded-lg bg-[#fff5e8] px-2.5 py-2 text-[11px] font-medium text-[#875b1d]">
-                {card.classification?.origin === "semantic_auto" ? (
+                {card.classification?.origin === "semantic_auto" || card.classification?.origin === "bionic_auto" ? (
                   <>
                     <b>자동 분류 확인 필요</b>
                     {card.classification.autoAlternatives?.length ? (
@@ -2017,11 +2026,42 @@ function LocalStorageSettings() {
   const [transferMessage, setTransferMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [transferOperation, setTransferOperation] = useState<"export" | "import" | null>(null);
+  const [localModel, setLocalModel] = useState<LocalModelSettings>(DEFAULT_LOCAL_MODEL_SETTINGS);
+  const [localModelMessage, setLocalModelMessage] = useState("");
+  const [localModelIds, setLocalModelIds] = useState<string[]>([]);
+  const [testingLocalModel, setTestingLocalModel] = useState(false);
   const backupInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void getLocalFolderState().then(setFolder);
+    void Promise.resolve().then(readLocalModelSettings).then(setLocalModel);
   }, []);
+
+  function persistLocalModel() {
+    const saved = saveLocalModelSettings(localModel);
+    setLocalModel(saved);
+    setLocalModelMessage("Bionic 연결 설정을 이 브라우저에 저장했습니다.");
+  }
+
+  async function testLocalModel() {
+    setTestingLocalModel(true);
+    setLocalModelMessage("");
+    try {
+      const saved = saveLocalModelSettings(localModel);
+      setLocalModel(saved);
+      const ids = await listLocalModelIds(saved);
+      setLocalModelIds(ids);
+      setLocalModelMessage(ids.includes(saved.model)
+        ? `${saved.model} 연결 성공 · 문항 이미지는 PC 안에서만 분석됩니다.`
+        : `Bionic 서버는 연결됐지만 ${saved.model} 모델을 찾지 못했습니다.`);
+    } catch (error) {
+      setLocalModelMessage(error instanceof Error
+        ? `Bionic 연결 실패: ${error.message}`
+        : "Bionic 로컬 서버에 연결하지 못했습니다.");
+    } finally {
+      setTestingLocalModel(false);
+    }
+  }
 
   async function chooseFolder() {
     setBusy(true);
@@ -2143,6 +2183,69 @@ function LocalStorageSettings() {
           </Button>
         </div>
         {transferMessage && <p role="status" className="mt-4 text-sm font-medium text-[#1f6b4f]">{transferMessage}</p>}
+      </section>
+      <section className="rounded-2xl border border-[#e3e8e4] bg-white p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-bold">Bionic 로컬 비전 분류</h2>
+            <p className="mt-1 text-sm leading-6 text-[#6d7772]">원본 문항 이미지를 Qwen3.5가 직접 읽고 시대를 먼저 판정합니다. API 사용료와 외부 업로드가 없습니다.</p>
+          </div>
+          <label className="flex shrink-0 items-center gap-2 text-sm font-semibold">
+            <input
+              type="checkbox"
+              className="size-4 accent-[#1f6b4f]"
+              checked={localModel.enabled}
+              onChange={(event) => setLocalModel((current) => ({ ...current, enabled: event.target.checked }))}
+            />
+            사용
+          </label>
+        </div>
+        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+          <label className="text-xs font-semibold text-[#526159]">
+            서버 주소
+            <input
+              aria-label="Bionic 서버 주소"
+              className="focus-ring mt-1.5 w-full rounded-xl border border-[#dce3df] px-3 py-2.5 text-sm font-normal text-[#18201d]"
+              value={localModel.baseUrl}
+              onChange={(event) => setLocalModel((current) => ({ ...current, baseUrl: event.target.value }))}
+              placeholder="http://localhost:1234"
+            />
+          </label>
+          <label className="text-xs font-semibold text-[#526159]">
+            비전 모델 ID
+            <input
+              aria-label="Bionic 비전 모델 ID"
+              list="bionic-model-ids"
+              className="focus-ring mt-1.5 w-full rounded-xl border border-[#dce3df] px-3 py-2.5 text-sm font-normal text-[#18201d]"
+              value={localModel.model}
+              onChange={(event) => setLocalModel((current) => ({ ...current, model: event.target.value }))}
+            />
+            <datalist id="bionic-model-ids">
+              {localModelIds.map((id) => <option key={id} value={id} />)}
+            </datalist>
+          </label>
+          <label className="text-xs font-semibold text-[#526159] sm:col-span-2">
+            API 토큰 <span className="font-normal text-[#8a948f]">(인증을 켠 경우만)</span>
+            <input
+              type="password"
+              autoComplete="off"
+              aria-label="Bionic API 토큰"
+              className="focus-ring mt-1.5 w-full rounded-xl border border-[#dce3df] px-3 py-2.5 text-sm font-normal text-[#18201d]"
+              value={localModel.apiToken}
+              onChange={(event) => setLocalModel((current) => ({ ...current, apiToken: event.target.value }))}
+              placeholder="현재 설정에서는 비워 두세요"
+            />
+          </label>
+        </div>
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <Button variant="primary" onClick={persistLocalModel}>설정 저장</Button>
+          <Button disabled={testingLocalModel} onClick={() => void testLocalModel()}>
+            {testingLocalModel ? <LoaderCircle className="animate-spin" size={16} /> : <Sparkles size={16} />}
+            연결 테스트
+          </Button>
+        </div>
+        {localModelMessage && <p role="status" className="mt-4 rounded-xl bg-[#eef5f0] p-3 text-sm font-medium text-[#285243]">{localModelMessage}</p>}
+        <p className="mt-4 text-xs leading-5 text-[#7a8580]">Bionic을 실행하고 Local Model API의 Running과 CORS를 켜야 합니다. 연결되지 않으면 기존 WebGPU 분류로 자동 전환됩니다.</p>
       </section>
       <section className="rounded-2xl border border-[#e3e8e4] bg-white p-6">
         <h2 className="font-bold">무료 Firebase 구성</h2>

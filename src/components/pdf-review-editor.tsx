@@ -43,7 +43,10 @@ import {
 } from "@/lib/classification";
 import { classifyWithBrowserEmbeddings } from "@/lib/browser-semantic-classifier";
 import { enrichQuestionTextsWithLocalOcr } from "@/lib/browser-question-ocr";
+import { classifyWithBionicVision } from "@/lib/bionic-vision-classifier";
+import { readLocalModelSettings } from "@/lib/local-model-settings";
 import { extractReviewedQuestionTexts } from "@/lib/question-text-extraction";
+import { renderQuestionRegionImages } from "@/lib/question-region-images";
 import type { RegionType } from "@/types/domain";
 
 interface ReviewDraft {
@@ -586,22 +589,6 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
       const pages = await collectPageContents();
       let textRecords = extractReviewedQuestionTexts(pages, reviewedRegions);
       let ocrSummary = "";
-      try {
-        const ocr = await enrichQuestionTextsWithLocalOcr(
-          pdf,
-          pages,
-          reviewedRegions,
-          textRecords,
-          (progress) => setMessage(progress),
-        );
-        textRecords = ocr.records;
-        if (ocr.enrichedCount) ocrSummary = `이미지 OCR ${ocr.enrichedCount}개 반영`;
-      } catch (error) {
-        ocrSummary = error instanceof Error
-          ? `이미지 OCR 생략: ${error.message}`
-          : "이미지 OCR을 사용할 수 없어 PDF 텍스트만 분석";
-      }
-      await saveQuestionTextsLocally(documentId, textRecords);
       const [existingClassifications, confirmedExamples] = await Promise.all([
         readQuestionClassificationsLocally(),
         listConfirmedClassificationExamplesLocally(classificationSubjectId),
@@ -614,28 +601,101 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
         if (!force) return false;
         return Boolean(existing.origin && existing.origin !== "manual");
       });
-      if (!pendingRecords.length) return "기존 수동 분류를 유지했습니다.";
+      if (!pendingRecords.length) {
+        await saveQuestionTextsLocally(documentId, textRecords);
+        return "기존 수동 분류를 유지했습니다.";
+      }
 
       const localResults = pendingRecords.map((record) => ({
         record,
         result: classifyQuestionLocally(record, candidates, confirmedExamples),
       }));
+      const localCandidatesByQuestion: Record<string, ReturnType<typeof classifyQuestionLocally>["candidates"]> = Object.fromEntries(localResults.map(({ record, result }) => [
+        record.questionKey,
+        result.candidates,
+      ]));
       const values: Record<string, Omit<QuestionClassification, "updatedAt">> = {};
+      let bionicCount = 0;
       let semanticCount = 0;
       let reviewCount = 0;
+      let bionicSummary = "";
       let semanticError = "";
       let semanticRuntime = "";
       const analyzable = localResults.filter(({ record }) =>
         Boolean(record.questionText || record.answerText || record.explanationText));
-      if (analyzable.length) {
+      const semanticFallbackKeys = new Set(analyzable.map(({ record }) => record.questionKey));
+      const localModelSettings = readLocalModelSettings();
+      if (localModelSettings.enabled && analyzable.length) {
+        try {
+          const imagesByQuestion = await renderQuestionRegionImages(
+            pdf,
+            reviewedRegions,
+            analyzable.map(({ record }) => record.questionKey),
+            (progress) => setMessage(progress),
+          );
+          const response = await classifyWithBionicVision({
+            settings: localModelSettings,
+            records: analyzable.map(({ record }) => record),
+            imagesByQuestion,
+            candidates,
+            localCandidatesByQuestion,
+            onProgress: (progress) => setMessage(progress),
+          });
+          response.results.forEach((answer) => {
+            semanticFallbackKeys.delete(answer.questionKey);
+            values[`${documentId}:${answer.questionKey}`] = {
+              subjectId: classificationSubjectId,
+              categoryId: answer.isConfident ? answer.categoryId : null,
+              difficultyOptionId: null,
+              questionTypeOptionId: null,
+              tagIds: [],
+              origin: "bionic_auto",
+              autoConfidence: answer.confidence,
+              autoReason: answer.reason,
+              autoAlternatives: answer.candidates,
+            };
+            if (answer.isConfident) bionicCount += 1;
+            else reviewCount += 1;
+          });
+          bionicSummary = `Bionic 원본 이미지 분류 ${bionicCount}개 완료`;
+          if (response.failedQuestionKeys.length) {
+            bionicSummary += ` · ${response.failedQuestionKeys.length}개는 WebGPU로 대체`;
+          }
+        } catch (error) {
+          bionicSummary = error instanceof Error
+            ? `Bionic 연결 실패로 WebGPU 대체: ${error.message}`
+            : "Bionic을 사용할 수 없어 WebGPU로 대체";
+        }
+      }
+      let semanticAnalyzable = analyzable.filter(({ record }) => semanticFallbackKeys.has(record.questionKey));
+      if (semanticAnalyzable.length) {
+        try {
+          const ocr = await enrichQuestionTextsWithLocalOcr(
+            pdf,
+            pages,
+            reviewedRegions,
+            semanticAnalyzable.map(({ record }) => record),
+            (progress) => setMessage(progress),
+          );
+          const enrichedByKey = new Map(ocr.records.map((record) => [record.questionKey, record]));
+          textRecords = textRecords.map((record) => enrichedByKey.get(record.questionKey) ?? record);
+          semanticAnalyzable = semanticAnalyzable.map(({ record }) => {
+            const enrichedRecord = enrichedByKey.get(record.questionKey) ?? record;
+            const result = classifyQuestionLocally(enrichedRecord, candidates, confirmedExamples);
+            localCandidatesByQuestion[record.questionKey] = result.candidates;
+            return { record: enrichedRecord, result };
+          });
+          if (ocr.enrichedCount) ocrSummary = `WebGPU 대체 문항 OCR ${ocr.enrichedCount}개 반영`;
+        } catch (error) {
+          ocrSummary = error instanceof Error
+            ? `대체 OCR 생략: ${error.message}`
+            : "대체 OCR을 사용할 수 없어 PDF 텍스트만 분석";
+        }
         try {
           const response = await classifyWithBrowserEmbeddings({
-            records: analyzable.map(({ record }) => record),
+            records: semanticAnalyzable.map(({ record }) => record),
             candidates,
-            localCandidatesByQuestion: Object.fromEntries(analyzable.map(({ record, result }) => [
-              record.questionKey,
-              result.candidates,
-            ])),
+            localCandidatesByQuestion,
             confirmedExamples,
           }, (progress) => setMessage(progress.message));
           semanticRuntime = response.runtime === "webgpu" ? "WebGPU" : "WASM";
@@ -660,13 +720,17 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
             : "브라우저 의미 분석을 사용할 수 없습니다.";
         }
       }
+      await saveQuestionTextsLocally(documentId, textRecords);
       await saveAutoQuestionClassificationsLocally(values);
-      const remainingCount = pendingRecords.length - semanticCount - reviewCount;
-      const summary = `의미 분석 우선 분류 ${semanticCount}개 완료${semanticRuntime ? ` (${semanticRuntime})` : ""}`;
+      const remainingCount = pendingRecords.length - bionicCount - semanticCount - reviewCount;
+      const semanticSummary = semanticAnalyzable.length
+        ? `브라우저 의미 분석 ${semanticCount}개 완료${semanticRuntime ? ` (${semanticRuntime})` : ""}`
+        : "";
       return [
-        summary,
+        bionicSummary,
+        semanticSummary,
         ocrSummary,
-        reviewCount ? `점수 차이가 작은 문항 ${reviewCount}개는 확인 필요로 유지` : "",
+        reviewCount ? `근거가 불충분하거나 충돌한 문항 ${reviewCount}개는 확인 필요` : "",
         remainingCount ? `텍스트 부족 ${remainingCount}개` : "",
         semanticError,
       ].filter(Boolean).join(" · ");
@@ -914,7 +978,7 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
             >
               {activeSubjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
             </select>
-            <span className="mt-2 block font-normal leading-5 text-[#738078]">이미지 글자는 무료 로컬 OCR로 보강하고, 시대·중단원 고유 핵심어로 후보를 제한한 뒤 WebGPU/WASM 의미 분석을 실행합니다. 점수 차이가 작거나 근거가 충돌하면 확인 필요로 남깁니다.</span>
+            <span className="mt-2 block font-normal leading-5 text-[#738078]">Bionic Qwen3.5가 원본 문제 영역만 보고 시대→중단원 순서로 우선 분류합니다. 연결되지 않은 경우에만 로컬 OCR과 WebGPU/WASM 의미 분석으로 전환하며, 근거가 충돌하면 확인 필요로 남깁니다.</span>
           </label>
           {inspection && (
             <div className="mt-4 rounded-xl border border-[#cddfd5] bg-[#f1f8f4] p-3 text-xs leading-5 text-[#315b49]">

@@ -122,7 +122,7 @@ export interface QuestionClassification {
   difficultyOptionId: string | null;
   questionTypeOptionId: string | null;
   tagIds: string[];
-  origin?: "manual" | "local_auto" | "semantic_auto" | "gemini_auto";
+  origin?: "manual" | "local_auto" | "semantic_auto" | "bionic_auto" | "gemini_auto";
   autoConfidence?: number;
   autoReason?: string;
   autoAlternatives?: RankedClassificationCandidate[];
