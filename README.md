@@ -39,7 +39,7 @@ PDF 문제지에서 문항 영역을 검토·저장하고, 문항 카드를 조�
 - 스캔 페이지 OCR 필요 표시와 검수 완료 상태 관리
 - `documents/{documentId}/review-draft.json` 검수 초안 저장
 - 검수 완료 문항의 문제·정답·해설 텍스트를 이용한 중단원 자동 분류
-- 확실한 문항은 로컬 규칙과 사용자가 확정한 분류 사례로 처리하고, 애매한 문항만 Gemini 무료 등급으로 보강
+- 1단계 로컬 규칙·확정 사례와 2단계 브라우저 다국어 임베딩 의미 분석으로 중단원 자동 분류
 - `/api/health` 구성 상태 점검
 
 문항 이미지 생성, Firestore 메타데이터 확정 저장, HWPX 생성기는 후속 단계입니다.
@@ -54,24 +54,16 @@ npm run dev
 
 Chrome 또는 Edge에서 `http://localhost:3000/settings`를 열고 **저장 폴더 선택**을 누릅니다. Firebase 값이 없어도 화면과 로컬 PDF 저장은 확인할 수 있습니다.
 
-## Gemini 무료 등급 보강
+## 브라우저 로컬 의미 분석
 
-Gemini는 로컬 분류 점수가 낮은 애매한 문항에만 호출됩니다. 서버는 모델을
-`gemini-3.5-flash-lite`로 고정하고, 무료 쿼터 소진이나 호출 실패 시 다른 모델로
-재시도하지 않습니다.
+규칙과 사용자가 확정한 사례만으로 애매한 문항은
+`Xenova/paraphrase-multilingual-MiniLM-L12-v2` 다국어 임베딩 모델로 다시 분류합니다.
+Transformers.js가 브라우저에서 ONNX 모델을 실행하며 WebGPU를 우선 사용하고,
+지원되지 않거나 실행에 실패하면 WASM으로 자동 전환합니다.
 
-Google AI Studio에서 **결제 계정이 연결되지 않고 Billing Tier가 Free인 프로젝트**의
-API 키를 만든 뒤 아래 두 환경 변수를 설정합니다.
-
-```dotenv
-GEMINI_API_KEY=무료_프로젝트_API_키
-GEMINI_FREE_TIER_ONLY=true
-```
-
-`GEMINI_FREE_TIER_ONLY=true`가 없거나 API 키가 비어 있으면 Gemini 호출은 차단되고
-로컬 자동 분류만 동작합니다. Google의 과금 등급은 API 요청 옵션이 아니라 키가 속한
-프로젝트의 결제 연결 상태로 결정되므로, AI Studio에서 Free 표시와 결제 미연결 상태를
-직접 확인해야 합니다. 실제 키는 저장소에 커밋하지 않습니다.
+모델과 토크나이저는 최초 사용 시 약 150MB를 내려받아 브라우저 캐시에 보관합니다.
+모델 파일만 Hugging Face에서 받고 문항·정답·해설은 서버나 외부 AI API로 전송하지
+않습니다. API 키, 결제 계정, Gemini 환경 변수는 필요하지 않습니다.
 
 PDF를 저장하면 업로드 창의 **검수 편집기 열기**를 눌러 자동 탐지 결과를 검토할 수 있습니다. 브라우저를 다시 연 뒤에는 설정에서 같은 저장 폴더를 다시 허용해야 할 수 있습니다.
 

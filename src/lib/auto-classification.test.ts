@@ -29,7 +29,7 @@ describe("automatic middle-unit classification", () => {
     expect(result.confidence).toBeGreaterThanOrEqual(0.72);
   });
 
-  it("keeps a low-evidence question for Gemini review", () => {
+  it("keeps a low-evidence question for browser semantic analysis", () => {
     const candidates = buildMiddleUnitCandidates(data, "subject-history-2");
     const result = classifyQuestionLocally({
       questionKey: "q-2",

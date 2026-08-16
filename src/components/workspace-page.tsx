@@ -1382,7 +1382,11 @@ function QuestionCards() {
                 </div>
                 {card.classification.origin && card.classification.origin !== "manual" && (
                   <p className="mt-2 text-[10px] font-medium text-[#6d7772]" title={card.classification.autoReason}>
-                    {card.classification.origin === "gemini_auto" ? "Gemini 무료 보강" : "로컬 자동 분류"}
+                    {card.classification.origin === "semantic_auto"
+                      ? "브라우저 의미 분석"
+                      : card.classification.origin === "gemini_auto"
+                        ? "이전 AI 자동 분류"
+                        : "로컬 규칙 분류"}
                     {typeof card.classification.autoConfidence === "number"
                       ? ` · 신뢰도 ${Math.round(card.classification.autoConfidence * 100)}%`
                       : ""}

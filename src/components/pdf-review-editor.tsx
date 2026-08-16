@@ -41,7 +41,7 @@ import {
   mergeDefaultClassificationData,
   type ClassificationData,
 } from "@/lib/classification";
-import { classifyWithGeminiFreeTier } from "@/lib/gemini-classification-client";
+import { classifyWithBrowserEmbeddings } from "@/lib/browser-semantic-classifier";
 import { extractReviewedQuestionTexts } from "@/lib/question-text-extraction";
 import type { RegionType } from "@/types/domain";
 
@@ -591,7 +591,6 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
       ]);
       const candidates = buildMiddleUnitCandidates(classificationData, classificationSubjectId);
       if (candidates.length < 2) return "선택한 과목에 활성 중단원이 충분하지 않습니다.";
-      const subjectName = classificationData.subjects.find((subject) => subject.id === classificationSubjectId)?.name ?? "역사";
       const pendingRecords = textRecords.filter((record) => {
         const existing = existingClassifications[`${documentId}:${record.questionKey}`];
         if (!existing) return true;
@@ -626,49 +625,47 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
         !result.isConfident &&
         result.candidates.length > 0 &&
         Boolean(record.questionText || record.answerText || record.explanationText));
-      let geminiCount = 0;
-      let geminiError = "";
-      for (let start = 0; start < ambiguous.length; start += 20) {
-        const batch = ambiguous.slice(start, start + 20);
-        setMessage(`애매한 문항 ${Math.min(start + batch.length, ambiguous.length)}/${ambiguous.length}개를 제미나이 무료 등급으로 확인하고 있습니다.`);
+      let semanticCount = 0;
+      let semanticError = "";
+      let semanticRuntime = "";
+      if (ambiguous.length) {
         try {
-          const response = await classifyWithGeminiFreeTier({
-            subjectName,
+          const response = await classifyWithBrowserEmbeddings({
+            records: ambiguous.map(({ record }) => record),
             candidates,
-            questions: batch.map(({ record, result }) => ({
-              ...record,
-              localCandidates: result.candidates,
-            })),
-          });
+            localCandidatesByQuestion: Object.fromEntries(ambiguous.map(({ record, result }) => [
+              record.questionKey,
+              result.candidates,
+            ])),
+          }, (progress) => setMessage(progress.message));
+          semanticRuntime = response.runtime === "webgpu" ? "WebGPU" : "WASM";
           response.results.forEach((answer) => {
-            const local = batch.find(({ record }) => record.questionKey === answer.questionKey)?.result;
-            const selected = candidates.find((candidate) => candidate.id === answer.categoryId);
-            if (!local || !selected) return;
             values[`${documentId}:${answer.questionKey}`] = {
               subjectId: classificationSubjectId,
               categoryId: answer.categoryId,
               difficultyOptionId: null,
               questionTypeOptionId: null,
               tagIds: [],
-              origin: "gemini_auto",
+              origin: "semantic_auto",
               autoConfidence: answer.confidence,
               autoReason: answer.reason,
-              autoAlternatives: local.candidates,
+              autoAlternatives: answer.candidates,
             };
-            geminiCount += 1;
+            semanticCount += 1;
           });
         } catch (error) {
-          geminiError = error instanceof Error ? error.message : "제미나이 무료 분류를 사용할 수 없습니다.";
-          break;
+          semanticError = error instanceof Error
+            ? `브라우저 의미 분석 실패: ${error.message}`
+            : "브라우저 의미 분석을 사용할 수 없습니다.";
         }
       }
       await saveAutoQuestionClassificationsLocally(values);
-      const remainingCount = pendingRecords.length - localCount - geminiCount;
-      const summary = `중단원 자동 분류 ${localCount + geminiCount}개 완료 (로컬 ${localCount}, Gemini 무료 ${geminiCount})`;
+      const remainingCount = pendingRecords.length - localCount - semanticCount;
+      const summary = `중단원 자동 분류 ${localCount + semanticCount}개 완료 (1단계 ${localCount}, 2단계 로컬 의미 분석 ${semanticCount}${semanticRuntime ? `·${semanticRuntime}` : ""})`;
       return [
         summary,
         remainingCount ? `확인 필요 ${remainingCount}개` : "",
-        geminiError,
+        semanticError,
       ].filter(Boolean).join(" · ");
     } finally {
       setClassifying(false);
@@ -914,7 +911,7 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
             >
               {activeSubjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
             </select>
-            <span className="mt-2 block font-normal leading-5 text-[#738078]">확실한 문항은 로컬에서, 애매한 문항만 Gemini 무료 등급으로 분류합니다.</span>
+            <span className="mt-2 block font-normal leading-5 text-[#738078]">1단계 키워드·확정 사례, 2단계 브라우저 의미 분석(WebGPU/WASM)으로 분류합니다. 최초 1회 약 150MB 모델을 내려받으며 문항은 외부 AI로 전송하지 않습니다.</span>
           </label>
           {inspection && (
             <div className="mt-4 rounded-xl border border-[#cddfd5] bg-[#f1f8f4] p-3 text-xs leading-5 text-[#315b49]">

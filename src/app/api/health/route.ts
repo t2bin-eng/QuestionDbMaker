@@ -18,10 +18,7 @@ export async function GET() {
         firebaseAdmin: firebaseConfigured ? "configured" : "not_configured",
         localFiles: "browser_directory",
         hwpxTemplate: process.env.HWPX_TEMPLATE_PATH ? "configured" : "not_configured",
-        geminiFreeClassification:
-          process.env.GEMINI_API_KEY && process.env.GEMINI_FREE_TIER_ONLY === "true"
-            ? "free_only_configured"
-            : "not_configured",
+        semanticClassification: "browser_webgpu_wasm",
       },
       requestId,
     },
