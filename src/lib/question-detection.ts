@@ -382,19 +382,13 @@ function regionsFromAnalyzedPage(page: ReturnType<typeof analyzePageLayout>): Ed
 
   if (!markers.length) return [];
 
-  const rightColumnStarts = lines.filter((line) => columnOf(line) === 1).map((line) => line.x);
-  const rightColumnAnchor = hasTwoColumns
-    ? rightColumnStarts.length
-      ? Math.min(...rightColumnStarts)
-      : Math.min(pageWidth, split + pageWidth * 0.04)
-    : pageWidth;
   const horizontalBounds = (column: number, markerX?: number) => {
     const columnLeft = column === 1 ? split : 0;
-    const columnRight = hasTwoColumns && column === 0 ? rightColumnAnchor : pageWidth;
+    const columnRight = hasTwoColumns && column === 0 ? split : pageWidth;
     const edgeInset = 4;
     return {
       left: Math.max(columnLeft + edgeInset, markerX === undefined ? columnLeft + edgeInset : markerX - 14),
-      right: columnRight - (hasTwoColumns && column === 0 ? 15 : edgeInset),
+      right: columnRight - (hasTwoColumns && column === 0 ? 3 : edgeInset),
     };
   };
 
@@ -543,7 +537,6 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
         structuralBoundary &&
         structuralBoundary.y < top + page.pageHeight * EARLY_SECTION_BOUNDARY_RATIO,
       );
-      if (startsWithPreviousAnswer) break;
       const stopCandidates = [
         page.contentBottom,
         nextQuestion ? nextQuestion.yRatio * page.pageHeight - 10 : Number.POSITIVE_INFINITY,
@@ -565,6 +558,8 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
           visual.y < bottom &&
           visual.width * visual.height >= page.pageWidth * page.pageHeight * 0.002;
       });
+      const hasChoiceBeforeBoundary = meaningfulLines.some((line) => CHOICE_CUE.test(line.text));
+      if (startsWithPreviousAnswer && !hasChoiceBeforeBoundary && !meaningfulVisuals.length) break;
 
       if (bottom - top >= page.pageHeight * 0.025 && (meaningfulLines.length || meaningfulVisuals.length)) {
         const rightColumnStarts = page.lines
@@ -576,9 +571,9 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
             : Math.min(page.pageWidth, page.split + page.pageWidth * 0.04)
           : page.pageWidth;
         const columnLeft = column === 1 ? page.split : 0;
-        const columnRight = page.twoColumns && column === 0 ? rightColumnAnchor : page.pageWidth;
+        const columnRight = page.twoColumns && column === 0 ? page.split : page.pageWidth;
         const left = column === 1 ? Math.max(columnLeft + 4, rightColumnAnchor - 14) : 4;
-        const right = columnRight - (page.twoColumns && column === 0 ? 15 : 4);
+        const right = columnRight - (page.twoColumns && column === 0 ? 3 : 4);
         allRegions.push({
           ...source,
           id: crypto.randomUUID(),
@@ -634,17 +629,9 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
     });
     if (!meaningfulLines.length && !meaningfulVisuals.length) return;
 
-    const rightColumnStarts = page.lines
-      .filter((line) => page.columnOf(line) === 1)
-      .map((line) => line.x);
-    const rightColumnAnchor = page.twoColumns
-      ? rightColumnStarts.length
-        ? Math.min(...rightColumnStarts)
-        : Math.min(page.pageWidth, page.split + page.pageWidth * 0.04)
-      : page.pageWidth;
     const columnLeft = column === 1 ? page.split : 0;
     const columnRight = page.twoColumns && column === 0
-      ? rightColumnAnchor
+      ? page.split
       : page.pageWidth;
     const contentLeft = meaningfulLines.length
       ? Math.min(...meaningfulLines.map((line) => line.x - 14))
@@ -660,7 +647,7 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
       pageNumber: page.pageNumber,
       xRatio: clamp(left / page.pageWidth),
       yRatio: clamp(Math.max(8, start) / page.pageHeight),
-      widthRatio: clamp((columnRight - (page.twoColumns && column === 0 ? 15 : 4) - left) / page.pageWidth, 0.04),
+      widthRatio: clamp((columnRight - (page.twoColumns && column === 0 ? 3 : 4) - left) / page.pageWidth, 0.04),
       heightRatio: clamp((Math.min(page.contentBottom, end) - Math.max(8, start)) / page.pageHeight, 0.02),
       regionType: type,
       sortOrder,

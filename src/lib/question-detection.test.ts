@@ -95,8 +95,41 @@ describe("question detection", () => {
 
     const left = regions.find((region) => region.questionNumber === "19")!;
     expect(left.xRatio * 600).toBeLessThanOrEqual(6);
-    expect((left.xRatio + left.widthRatio) * 600).toBeGreaterThan(300);
+    expect((left.xRatio + left.widthRatio) * 600).toBeGreaterThan(290);
     expect((left.xRatio + left.widthRatio) * 600).toBeLessThan(320);
+  });
+
+  it("keeps a final choice before an early answer block as a question continuation", () => {
+    const regions = detectDocumentQuestionRegions([
+      {
+        pageNumber: 1,
+        pageWidth: 600,
+        pageHeight: 800,
+        fragments: [
+          { text: "4. 옳은 것은?", x: 25, y: 700, width: 100, height: 10 },
+          { text: "④ 네 번째 선택지", x: 25, y: 750, width: 100, height: 9 },
+        ],
+      },
+      {
+        pageNumber: 2,
+        pageWidth: 600,
+        pageHeight: 800,
+        fragments: [
+          { text: "⑤ 다섯 번째 선택지", x: 25, y: 42, width: 110, height: 9 },
+          { text: "정답 ①", x: 25, y: 78, width: 55, height: 9 },
+          { text: "해설", x: 25, y: 110, width: 25, height: 9 },
+          { text: "5. 다음 문제는?", x: 25, y: 260, width: 110, height: 10 },
+        ],
+      },
+    ]);
+
+    const questionFour = regions.filter((region) =>
+      region.questionNumber === "4" && region.regionType === "question",
+    );
+    expect(questionFour).toHaveLength(2);
+    expect(questionFour[1].pageNumber).toBe(2);
+    expect(questionFour[1].yRatio).toBeLessThan(0.03);
+    expect((questionFour[1].yRatio + questionFour[1].heightRatio) * 800).toBeLessThan(78);
   });
 
   it("uses text density to keep a page two-column when only one marker is found", () => {
