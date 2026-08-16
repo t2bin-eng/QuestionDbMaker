@@ -211,6 +211,52 @@ function PageThumbnail({ pdf, pageNumber, active, onClick }: {
   );
 }
 
+export function ReviewRegionList({
+  regions,
+  selectedId,
+  onSelect,
+  onDelete,
+}: {
+  regions: EditableRegion[];
+  selectedId: string | null;
+  onSelect: (region: EditableRegion) => void;
+  onDelete: (regionId: string) => void;
+}) {
+  return (
+    <div className="mt-4 space-y-2">
+      {regions.map((region, index) => {
+        const label = `${region.questionNumber ?? index + 1}번 ${regionTypeLabels[region.regionType]} 영역`;
+        return (
+          <div
+            key={region.id}
+            className={`flex w-full items-center gap-1 rounded-xl border p-1 transition ${selectedId === region.id ? "border-[#1f6b4f] bg-[#eaf3ee]" : "border-[#e1e6e3] hover:bg-[#f7f9f7]"}`}
+          >
+            <button
+              type="button"
+              onClick={() => onSelect(region)}
+              aria-label={`${label} 선택`}
+              className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2 text-left"
+            >
+              <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-white font-mono text-xs shadow-sm">{region.questionNumber ?? index + 1}</span>
+              <span className="min-w-0 flex-1"><b className="block text-sm">{regionTypeLabels[region.regionType]} 영역</b><small className="text-[#6b7771]">{region.pageNumber}쪽 · 영역 {region.sortOrder + 1}</small></span>
+              {region.status === "reviewed" && <Check size={16} aria-label="검수 완료" className="shrink-0 text-[#1f6b4f]" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => onDelete(region.id)}
+              aria-label={`${label} 삭제`}
+              title="영역 삭제"
+              className="grid size-9 shrink-0 place-items-center rounded-lg text-[#cf7b18] transition hover:bg-[#fff0dc] hover:text-[#a75f0d] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#cf7b18]"
+            >
+              <Minus size={16} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function PdfReviewEditor({ documentId }: { documentId: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pageSurfaceRef = useRef<HTMLDivElement>(null);
@@ -502,10 +548,20 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
     }
   }
 
+  function deleteRegion(regionId: string) {
+    const deletedIndex = regions.findIndex((region) => region.id === regionId);
+    if (deletedIndex < 0) return;
+    const nextRegions = regions.filter((region) => region.id !== regionId);
+    commit(nextRegions);
+    if (selectedId === regionId) {
+      const nextSelected = nextRegions[Math.min(deletedIndex, nextRegions.length - 1)] ?? null;
+      setSelectedId(nextSelected?.id ?? null);
+      if (nextSelected) setPageNumber(nextSelected.pageNumber);
+    }
+  }
+
   function deleteSelected() {
-    if (!selectedId) return;
-    commit(regions.filter((region) => region.id !== selectedId));
-    setSelectedId(null);
+    if (selectedId) deleteRegion(selectedId);
   }
 
   function markReviewed() {
@@ -684,19 +740,12 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
               텍스트가 없는 페이지: {ocrPages.join(", ")}쪽<br />해당 페이지는 OCR이 필요하며 수동 영역 지정이 가능합니다.
             </div>
           )}
-          <div className="mt-4 space-y-2">
-            {regions.map((region, index) => (
-              <button
-                key={region.id}
-                onClick={() => { setSelectedId(region.id); setPageNumber(region.pageNumber); }}
-                className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left transition ${selectedId === region.id ? "border-[#1f6b4f] bg-[#eaf3ee]" : "border-[#e1e6e3] hover:bg-[#f7f9f7]"}`}
-              >
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-white font-mono text-xs shadow-sm">{region.questionNumber ?? index + 1}</span>
-                <span className="min-w-0 flex-1"><b className="block text-sm">{regionTypeLabels[region.regionType]} 영역</b><small className="text-[#6b7771]">{region.pageNumber}쪽 · 영역 {region.sortOrder + 1}</small></span>
-                {region.status === "reviewed" ? <Check size={16} className="text-[#1f6b4f]" /> : <Minus size={16} className="text-[#cf7b18]" />}
-              </button>
-            ))}
-          </div>
+          <ReviewRegionList
+            regions={regions}
+            selectedId={selectedId}
+            onSelect={(region) => { setSelectedId(region.id); setPageNumber(region.pageNumber); }}
+            onDelete={deleteRegion}
+          />
           {!regions.length && !loading && <div className="mt-5 rounded-xl border border-dashed border-[#ccd6d0] p-6 text-center text-sm text-[#6b7771]">탐지된 영역이 없습니다.<br />상단의 영역 추가를 사용하세요.</div>}
           <div className="sticky bottom-4 mt-5 space-y-2 rounded-2xl border border-[#dfe5e1] bg-[#f8faf8] p-4">
             <h3 className="text-sm font-bold">선택 영역</h3>
