@@ -2,7 +2,8 @@
 
 import type { FeatureExtractionPipeline } from "@huggingface/transformers";
 import {
-  buildSemanticCandidateText,
+  buildSemanticCandidateDocuments,
+  buildSemanticMajorDocuments,
   buildSemanticClassificationResults,
   buildSemanticQuestionText,
   type SemanticEmbeddingInput,
@@ -97,14 +98,47 @@ async function runWithExtractor(
   runtimeState: CachedExtractor,
   onProgress?: ProgressCallback,
 ) {
-  const candidateTexts = input.candidates.map(buildSemanticCandidateText);
+  const candidateDocumentGroups = input.candidates.map((candidate) =>
+    buildSemanticCandidateDocuments(candidate, input.confirmedExamples));
+  const candidateTexts = candidateDocumentGroups.flat();
+  const majorNames = Array.from(new Set(input.candidates.map((candidate) => candidate.majorName)));
+  const majorDocumentGroups = Object.fromEntries(majorNames.map((majorName) => [
+    majorName,
+    buildSemanticMajorDocuments(majorName, input.candidates),
+  ]));
+  const majorTexts = majorNames.flatMap((majorName) => majorDocumentGroups[majorName]);
   const questionTexts = input.records.map(buildSemanticQuestionText);
-  const candidateEmbeddings = await embedTexts(
+  const candidateDocumentEmbeddings = await embedTexts(
     runtimeState.extractor,
     candidateTexts,
     runtimeState.runtime,
     onProgress,
   );
+  let candidateDocumentOffset = 0;
+  const candidateEmbeddings = candidateDocumentGroups.map((documents) => {
+    const vectors = candidateDocumentEmbeddings.slice(
+      candidateDocumentOffset,
+      candidateDocumentOffset + documents.length,
+    );
+    candidateDocumentOffset += documents.length;
+    return vectors;
+  });
+  const majorDocumentEmbeddings = await embedTexts(
+    runtimeState.extractor,
+    majorTexts,
+    runtimeState.runtime,
+    onProgress,
+  );
+  let majorDocumentOffset = 0;
+  const majorEmbeddings = Object.fromEntries(majorNames.map((majorName) => {
+    const documents = majorDocumentGroups[majorName];
+    const vectors = majorDocumentEmbeddings.slice(
+      majorDocumentOffset,
+      majorDocumentOffset + documents.length,
+    );
+    majorDocumentOffset += documents.length;
+    return [majorName, vectors];
+  }));
   const questionEmbeddings = await embedTexts(
     runtimeState.extractor,
     questionTexts,
@@ -116,6 +150,7 @@ async function runWithExtractor(
     results: buildSemanticClassificationResults(input, {
       runtime: runtimeState.runtime,
       candidateEmbeddings,
+      majorEmbeddings,
       questionEmbeddings,
     }),
   };

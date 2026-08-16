@@ -1,4 +1,5 @@
 import type {
+  ConfirmedClassificationExample,
   MiddleUnitCandidate,
   QuestionTextRecord,
   RankedClassificationCandidate,
@@ -8,6 +9,9 @@ export interface SemanticClassificationResult {
   questionKey: string;
   categoryId: string;
   confidence: number;
+  isConfident: boolean;
+  semanticSimilarity: number;
+  semanticMargin: number;
   reason: string;
   candidates: RankedClassificationCandidate[];
 }
@@ -23,12 +27,14 @@ export interface SemanticEmbeddingInput {
   records: QuestionTextRecord[];
   candidates: MiddleUnitCandidate[];
   localCandidatesByQuestion: Record<string, RankedClassificationCandidate[]>;
+  confirmedExamples?: ConfirmedClassificationExample[];
 }
 
 export interface SemanticEmbeddingOutput {
   runtime: "webgpu" | "wasm";
   questionEmbeddings: number[][];
-  candidateEmbeddings: number[][];
+  candidateEmbeddings: number[][][];
+  majorEmbeddings?: Record<string, number[][]>;
 }
 
 export function buildSemanticQuestionText(record: QuestionTextRecord) {
@@ -40,13 +46,49 @@ export function buildSemanticQuestionText(record: QuestionTextRecord) {
   return sections.join("\n").slice(0, 4_000);
 }
 
-export function buildSemanticCandidateText(candidate: MiddleUnitCandidate) {
-  return [
+export function buildSemanticCandidateDocuments(
+  candidate: MiddleUnitCandidate,
+  examples: ConfirmedClassificationExample[] = [],
+) {
+  const profile = [
     `역사 과목 중단원 분류`,
     `대단원: ${candidate.majorName}`,
     `중단원: ${candidate.name}`,
-    `핵심 개념: ${candidate.profile}`,
+    `이 단원에서 다루는 핵심 개념: ${candidate.profile}`,
   ].join("\n");
+  const concepts = candidate.profile.split(" · ").slice(2).filter(Boolean);
+  const conceptDocuments: string[] = [];
+  for (let start = 0; start < concepts.length; start += 3) {
+    conceptDocuments.push([
+      `대단원: ${candidate.majorName}`,
+      `중단원: ${candidate.name}`,
+      `대표 핵심 개념: ${concepts.slice(start, start + 3).join(", ")}`,
+    ].join("\n"));
+  }
+  const confirmed = examples
+    .filter((example) => example.categoryId === candidate.id)
+    .slice(0, 3)
+    .map((example) => buildSemanticQuestionText(example).slice(0, 800));
+  return [profile, ...conceptDocuments, ...confirmed];
+}
+
+export function buildSemanticMajorDocuments(
+  majorName: string,
+  candidates: MiddleUnitCandidate[],
+) {
+  const children = candidates.filter((candidate) => candidate.majorName === majorName);
+  return [
+    [
+      `역사 과목 대단원 분류`,
+      `대단원: ${majorName}`,
+      `하위 중단원: ${children.map((candidate) => candidate.name).join(", ")}`,
+    ].join("\n"),
+    ...children.map((candidate) => [
+      `대단원: ${majorName}`,
+      `이 대단원에서 다루는 내용: ${candidate.name}`,
+      `대표 개념: ${candidate.profile.split(" · ").slice(2).join(", ")}`,
+    ].join("\n")),
+  ];
 }
 
 function clamp(value: number, min = 0, max = 1) {
@@ -67,12 +109,20 @@ export function cosineSimilarity(left: number[], right: number[]) {
   return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
 }
 
+function documentGroupSimilarity(questionEmbedding: number[], embeddings: number[][]) {
+  const similarities = embeddings.map((embedding) => cosineSimilarity(questionEmbedding, embedding));
+  const profileSimilarity = similarities[0] ?? 0;
+  const focusedSimilarity = Math.max(profileSimilarity, ...similarities.slice(1));
+  return profileSimilarity * 0.58 + focusedSimilarity * 0.42;
+}
+
 export function rankSemanticCandidates(
   questionKey: string,
   questionEmbedding: number[],
   candidates: MiddleUnitCandidate[],
-  candidateEmbeddings: number[][],
+  candidateEmbeddings: number[][][],
   localCandidates: RankedClassificationCandidate[] = [],
+  majorEmbeddings: Record<string, number[][]> = {},
 ): SemanticClassificationResult | null {
   if (!questionEmbedding.length || candidates.length !== candidateEmbeddings.length) return null;
   const bestLocalScore = Math.max(0, ...localCandidates.map((candidate) => candidate.score));
@@ -83,9 +133,18 @@ export function rankSemanticCandidates(
 
   const ranked = candidates
     .map((candidate, index) => {
-      const similarity = cosineSimilarity(questionEmbedding, candidateEmbeddings[index]);
+      const middleSimilarity = documentGroupSimilarity(
+        questionEmbedding,
+        candidateEmbeddings[index] ?? [],
+      );
+      const majorDocuments = majorEmbeddings[candidate.majorName] ?? [];
+      const majorSimilarity = majorDocuments.length
+        ? documentGroupSimilarity(questionEmbedding, majorDocuments)
+        : middleSimilarity;
+      const similarity = middleSimilarity * 0.62 + majorSimilarity * 0.38;
       const localSignal = localScores.get(candidate.id) ?? 0;
-      const combinedScore = similarity * 0.86 + localSignal * 0.14;
+      // The semantic model is authoritative. Rules normally only break a near tie.
+      const combinedScore = similarity + localSignal * 0.004;
       return {
         categoryId: candidate.id,
         categoryName: candidate.name,
@@ -97,15 +156,38 @@ export function rankSemanticCandidates(
       };
     })
     .sort((left, right) => right.score - left.score);
-  const first = ranked[0];
-  const second = ranked[1];
-  if (!first) return null;
+  const semanticFirst = ranked[0];
+  if (!semanticFirst) return null;
+  const localFirst = localCandidates[0];
+  const hasDistinctiveLocalAnchor = Boolean(
+    localFirst &&
+    localFirst.categoryId !== semanticFirst.categoryId &&
+    localFirst.score >= 7 &&
+    localFirst.matchedTerms.length >= 2,
+  );
+  const anchoredCandidate = hasDistinctiveLocalAnchor
+    ? ranked.find((candidate) => candidate.categoryId === localFirst?.categoryId)
+    : undefined;
+  const first = anchoredCandidate ?? semanticFirst;
+  const ordered = anchoredCandidate
+    ? [anchoredCandidate, ...ranked.filter((candidate) => candidate.categoryId !== anchoredCandidate.categoryId)]
+    : ranked;
+  const second = ordered[1];
 
-  const margin = Math.max(0, first.score - (second?.score ?? 0));
-  const semanticEvidence = clamp((first.similarity - 0.12) / 0.58);
-  const separation = clamp(margin / 0.14);
-  const confidence = Number(clamp(0.42 + semanticEvidence * 0.38 + separation * 0.2, 0.42, 0.96).toFixed(3));
-  const alternatives = ranked.slice(0, 3).map<RankedClassificationCandidate>((candidate) => ({
+  const semanticMargin = first.similarity - (second?.similarity ?? 0);
+  const semanticEvidence = clamp((first.similarity - 0.22) / 0.48);
+  const separation = clamp((semanticMargin - 0.004) / 0.1);
+  const confidence = Number((anchoredCandidate
+    ? clamp(0.72 + Math.min(0.18, (localFirst?.score ?? 0) / 100), 0.72, 0.9)
+    : clamp(0.35 + semanticEvidence * 0.4 + separation * 0.25, 0.35, 0.96)).toFixed(3));
+  const localAgrees = localCandidates[0]?.categoryId === first.categoryId &&
+    (localCandidates[0]?.score ?? 0) >= 3;
+  const usedLocalTieBreaker = !anchoredCandidate && localAgrees && semanticMargin < 0.0041;
+  const isConfident = Boolean(anchoredCandidate) || (first.similarity >= 0.3 && (
+    semanticMargin >= 0.012 ||
+    (localAgrees && semanticMargin >= 0.006)
+  ));
+  const alternatives = ordered.slice(0, 3).map<RankedClassificationCandidate>((candidate) => ({
     categoryId: candidate.categoryId,
     categoryName: candidate.categoryName,
     majorName: candidate.majorName,
@@ -117,7 +199,12 @@ export function rankSemanticCandidates(
     questionKey,
     categoryId: first.categoryId,
     confidence,
-    reason: `브라우저 의미 유사도 ${Math.round(first.similarity * 100)}% · 1단계 규칙 신호 ${Math.round(first.localSignal * 100)}%`,
+    isConfident,
+    semanticSimilarity: Number(first.similarity.toFixed(4)),
+    semanticMargin: Number((anchoredCandidate ? 0 : semanticMargin).toFixed(4)),
+    reason: anchoredCandidate
+      ? `WebGPU 의미 분석 후 고유 핵심 개념 ${localFirst?.matchedTerms.slice(0, 3).join(", ")} 일치로 교정`
+      : `대단원→중단원 계층형 의미 유사도 ${Math.round(first.similarity * 100)}% · 2순위와 차이 ${(semanticMargin * 100).toFixed(1)}%p${usedLocalTieBreaker ? " · 규칙 동점 보정 적용" : ""}`,
     candidates: alternatives,
   };
 }
@@ -133,6 +220,7 @@ export function buildSemanticClassificationResults(
       input.candidates,
       output.candidateEmbeddings,
       input.localCandidatesByQuestion[record.questionKey] ?? [],
+      output.majorEmbeddings,
     );
     return result ? [result] : [];
   });

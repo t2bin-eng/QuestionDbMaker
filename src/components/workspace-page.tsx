@@ -931,8 +931,8 @@ function QuestionCards() {
     if (difficultyFilters.length && (!card.classification?.difficultyOptionId || !difficultyFilters.includes(card.classification.difficultyOptionId))) return false;
     if (questionTypeFilter && card.classification?.questionTypeOptionId !== questionTypeFilter) return false;
     if (tagFilters.length && !tagFilters.every((tagId) => card.classification?.tagIds.includes(tagId))) return false;
-    if (classificationStatusFilter === "classified" && !card.classification) return false;
-    if (classificationStatusFilter === "unclassified" && card.classification) return false;
+    if (classificationStatusFilter === "classified" && !card.classification?.categoryId) return false;
+    if (classificationStatusFilter === "unclassified" && card.classification?.categoryId) return false;
     if (!normalizedTerm) return true;
     return `${card.sourceName} ${card.sourceQuestionNumber ?? ""} ${classificationText(card)}`
       .toLocaleLowerCase()
@@ -1373,7 +1373,7 @@ function QuestionCards() {
                 )}
               </div>
             )}
-            {card.classification ? (
+            {card.classification?.categoryId ? (
               <>
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {classificationLabels(card).slice(0, 5).map((label, index) => (
@@ -1395,7 +1395,18 @@ function QuestionCards() {
                 )}
               </>
             ) : (
-              <p className="mt-3 rounded-lg bg-[#fff5e8] px-2.5 py-2 text-[11px] font-medium text-[#875b1d]">분류 미지정</p>
+              <div className="mt-3 rounded-lg bg-[#fff5e8] px-2.5 py-2 text-[11px] font-medium text-[#875b1d]">
+                {card.classification?.origin === "semantic_auto" ? (
+                  <>
+                    <b>자동 분류 확인 필요</b>
+                    {card.classification.autoAlternatives?.length ? (
+                      <span className="mt-1 block font-normal">
+                        추천: {card.classification.autoAlternatives.slice(0, 2).map((item) => item.categoryName).join(" · ")}
+                      </span>
+                    ) : null}
+                  </>
+                ) : "분류 미지정"}
+              </div>
             )}
             <div className="mt-3 flex justify-between gap-3 text-xs text-[#6d7772]">
               <span>{card.regions.length > 1 ? `${card.regions.length}개 영역 결합` : `${card.regions[0].pageNumber}쪽`} · 검수 완료</span>

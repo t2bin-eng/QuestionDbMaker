@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MiddleUnitCandidate } from "./auto-classification";
-import { cosineSimilarity, rankSemanticCandidates } from "./semantic-classification";
+import { buildSemanticCandidateDocuments, cosineSimilarity, rankSemanticCandidates } from "./semantic-classification";
 
 const candidates: MiddleUnitCandidate[] = [
   { id: "industry", subjectId: "history", name: "산업화", majorName: "대한민국", profile: "경제 개발 수출" },
@@ -18,11 +18,12 @@ describe("browser semantic classification ranking", () => {
       "q1",
       [0.95, 0.05],
       candidates,
-      [[1, 0], [0, 1]],
+      [[[1, 0]], [[0, 1]]],
     );
     expect(result?.categoryId).toBe("industry");
     expect(result?.candidates).toHaveLength(2);
     expect(result?.confidence).toBeGreaterThan(0.7);
+    expect(result?.isConfident).toBe(true);
   });
 
   it("uses first-stage local evidence as a controlled tie breaker", () => {
@@ -30,10 +31,65 @@ describe("browser semantic classification ranking", () => {
       "q2",
       [1, 1],
       candidates,
-      [[1, 0], [0, 1]],
+      [[[1, 0]], [[0, 1]]],
       [{ categoryId: "democracy", categoryName: "민주화", majorName: "대한민국", score: 4, matchedTerms: ["직선제"] }],
     );
     expect(result?.categoryId).toBe("democracy");
-    expect(result?.reason).toContain("1단계 규칙 신호");
+    expect(result?.isConfident).toBe(false);
+    expect(result?.reason).toContain("동점 보정");
+  });
+
+  it("does not let a strong but wrong keyword score override clear semantics", () => {
+    const result = rankSemanticCandidates(
+      "q3",
+      [0.95, 0.05],
+      candidates,
+      [[[1, 0]], [[0, 1]]],
+      [{ categoryId: "democracy", categoryName: "민주화", majorName: "대한민국", score: 100, matchedTerms: ["직선제"] }],
+    );
+    expect(result?.categoryId).toBe("industry");
+    expect(result?.isConfident).toBe(true);
+  });
+
+  it("corrects a model miss when multiple distinctive curriculum concepts agree", () => {
+    const result = rankSemanticCandidates(
+      "q-anchor",
+      [0.05, 0.95],
+      candidates,
+      [[[1, 0]], [[0, 1]]],
+      [{
+        categoryId: "industry",
+        categoryName: "산업화",
+        majorName: "대한민국",
+        score: 8.4,
+        matchedTerms: ["새마을 운동", "산업화"],
+      }],
+    );
+    expect(result?.categoryId).toBe("industry");
+    expect(result?.isConfident).toBe(true);
+    expect(result?.reason).toContain("고유 핵심 개념");
+  });
+
+  it("keeps a semantically tied result for manual review", () => {
+    const result = rankSemanticCandidates(
+      "q4",
+      [1, 1],
+      candidates,
+      [[[1, 0]], [[0, 1]]],
+    );
+    expect(result?.isConfident).toBe(false);
+    expect(result?.semanticMargin).toBe(0);
+  });
+
+  it("creates compact concept documents so a distinctive term is not diluted", () => {
+    const documents = buildSemanticCandidateDocuments({
+      id: "industry",
+      subjectId: "history",
+      name: "산업화",
+      majorName: "대한민국",
+      profile: "대한민국 · 산업화 · 경제 개발 · 새마을 운동 · 중화학 공업 · 수출 주도",
+    });
+    expect(documents.length).toBeGreaterThan(1);
+    expect(documents.some((document) => document.includes("새마을 운동"))).toBe(true);
   });
 });

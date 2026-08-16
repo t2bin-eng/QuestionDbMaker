@@ -604,45 +604,28 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
         result: classifyQuestionLocally(record, candidates, confirmedExamples),
       }));
       const values: Record<string, Omit<QuestionClassification, "updatedAt">> = {};
-      let localCount = 0;
-      localResults.filter(({ result }) => result.isConfident && result.candidates[0]).forEach(({ record, result }) => {
-        const first = result.candidates[0];
-        values[`${documentId}:${record.questionKey}`] = {
-          subjectId: classificationSubjectId,
-          categoryId: first.categoryId,
-          difficultyOptionId: null,
-          questionTypeOptionId: null,
-          tagIds: [],
-          origin: "local_auto",
-          autoConfidence: result.confidence,
-          autoReason: result.reason,
-          autoAlternatives: result.candidates,
-        };
-        localCount += 1;
-      });
-
-      const ambiguous = localResults.filter(({ record, result }) =>
-        !result.isConfident &&
-        result.candidates.length > 0 &&
-        Boolean(record.questionText || record.answerText || record.explanationText));
       let semanticCount = 0;
+      let reviewCount = 0;
       let semanticError = "";
       let semanticRuntime = "";
-      if (ambiguous.length) {
+      const analyzable = localResults.filter(({ record }) =>
+        Boolean(record.questionText || record.answerText || record.explanationText));
+      if (analyzable.length) {
         try {
           const response = await classifyWithBrowserEmbeddings({
-            records: ambiguous.map(({ record }) => record),
+            records: analyzable.map(({ record }) => record),
             candidates,
-            localCandidatesByQuestion: Object.fromEntries(ambiguous.map(({ record, result }) => [
+            localCandidatesByQuestion: Object.fromEntries(analyzable.map(({ record, result }) => [
               record.questionKey,
               result.candidates,
             ])),
+            confirmedExamples,
           }, (progress) => setMessage(progress.message));
           semanticRuntime = response.runtime === "webgpu" ? "WebGPU" : "WASM";
           response.results.forEach((answer) => {
             values[`${documentId}:${answer.questionKey}`] = {
               subjectId: classificationSubjectId,
-              categoryId: answer.categoryId,
+              categoryId: answer.isConfident ? answer.categoryId : null,
               difficultyOptionId: null,
               questionTypeOptionId: null,
               tagIds: [],
@@ -651,7 +634,8 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
               autoReason: answer.reason,
               autoAlternatives: answer.candidates,
             };
-            semanticCount += 1;
+            if (answer.isConfident) semanticCount += 1;
+            else reviewCount += 1;
           });
         } catch (error) {
           semanticError = error instanceof Error
@@ -660,11 +644,12 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
         }
       }
       await saveAutoQuestionClassificationsLocally(values);
-      const remainingCount = pendingRecords.length - localCount - semanticCount;
-      const summary = `중단원 자동 분류 ${localCount + semanticCount}개 완료 (1단계 ${localCount}, 2단계 로컬 의미 분석 ${semanticCount}${semanticRuntime ? `·${semanticRuntime}` : ""})`;
+      const remainingCount = pendingRecords.length - semanticCount - reviewCount;
+      const summary = `의미 분석 우선 분류 ${semanticCount}개 완료${semanticRuntime ? ` (${semanticRuntime})` : ""}`;
       return [
         summary,
-        remainingCount ? `확인 필요 ${remainingCount}개` : "",
+        reviewCount ? `점수 차이가 작은 문항 ${reviewCount}개는 확인 필요로 유지` : "",
+        remainingCount ? `텍스트 부족 ${remainingCount}개` : "",
         semanticError,
       ].filter(Boolean).join(" · ");
     } finally {
@@ -911,7 +896,7 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
             >
               {activeSubjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
             </select>
-            <span className="mt-2 block font-normal leading-5 text-[#738078]">1단계 키워드·확정 사례, 2단계 브라우저 의미 분석(WebGPU/WASM)으로 분류합니다. 최초 1회 약 150MB 모델을 내려받으며 문항은 외부 AI로 전송하지 않습니다.</span>
+            <span className="mt-2 block font-normal leading-5 text-[#738078]">모든 문항을 브라우저 의미 분석(WebGPU/WASM)으로 먼저 분류합니다. 키워드는 동점 보정과 고유 핵심 개념 오류 교정에만 사용하고, 점수 차이가 작으면 확인 필요로 남깁니다.</span>
           </label>
           {inspection && (
             <div className="mt-4 rounded-xl border border-[#cddfd5] bg-[#f1f8f4] p-3 text-xs leading-5 text-[#315b49]">
