@@ -111,4 +111,24 @@ describe("Gemini 무료 전용 분류 API", () => {
     await expect(response.json()).resolves.toMatchObject({ code: "FREE_TIER_QUOTA_EXHAUSTED" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("키 권한 오류를 구분하고 다른 모델로 재시도하지 않는다", async () => {
+    process.env.GEMINI_API_KEY = "free-project-test-key";
+    process.env.GEMINI_FREE_TIER_ONLY = "true";
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: 403, status: "PERMISSION_DENIED", message: "API key rejected" },
+    }), { status: 403, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request("test-permission"));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ code: "GEMINI_PERMISSION_DENIED" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledWith(
+      "Gemini free-tier provider rejected classification",
+      expect.objectContaining({ httpStatus: 403, providerStatus: "PERMISSION_DENIED" }),
+    );
+  });
 });

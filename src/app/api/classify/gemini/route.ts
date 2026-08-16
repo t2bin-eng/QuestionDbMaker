@@ -141,11 +141,34 @@ export async function POST(request: Request) {
       },
     );
     if (!response.ok) {
+      const providerPayload = await response.json().catch(() => null) as {
+        error?: { code?: number; message?: string; status?: string };
+      } | null;
+      const providerError = providerPayload?.error;
+      console.error("Gemini free-tier provider rejected classification", {
+        httpStatus: response.status,
+        providerStatus: providerError?.status ?? "UNKNOWN",
+        message: providerError?.message?.slice(0, 300) ?? "No provider message",
+      });
       if (response.status === 429) {
         return errorResponse(
           "제미나이 무료 쿼터가 소진되어 분류를 중단했습니다. 유료 모델로 전환하지 않았습니다.",
           503,
           "FREE_TIER_QUOTA_EXHAUSTED",
+        );
+      }
+      if (response.status === 403) {
+        return errorResponse(
+          "제미나이 API 키 권한을 확인하지 못했습니다. 무료 프로젝트의 API 키인지 확인해 주세요.",
+          503,
+          "GEMINI_PERMISSION_DENIED",
+        );
+      }
+      if (response.status === 404) {
+        return errorResponse(
+          "고정된 제미나이 무료 모델을 현재 프로젝트에서 사용할 수 없습니다.",
+          503,
+          "GEMINI_FREE_MODEL_UNAVAILABLE",
         );
       }
       return errorResponse(
