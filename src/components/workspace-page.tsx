@@ -21,7 +21,9 @@ import {
   listLocalDocuments,
   listLocalQuestionCards,
   readClassificationLocally,
+  readQuestionTextsLocally,
   readSourcePdfLocally,
+  saveAutoQuestionClassificationsLocally,
   saveGeneratedPdfLocally,
   saveGeneratedHwpxLocally,
   saveLocalExamSet,
@@ -56,6 +58,10 @@ import {
   saveLocalModelSettings,
   type LocalModelSettings,
 } from "@/lib/local-model-settings";
+import type {
+  CodexClassificationResult,
+  CodexImportAssessment,
+} from "@/lib/codex-classification-exchange";
 
 type View = "dashboard" | "documents" | "questions" | "exam-sets" | "categories" | "settings";
 const EXAM_SELECTION_KEY = "question-card-studio:exam-selection";
@@ -67,6 +73,12 @@ interface MultiSelectFilterOption {
   categoryType?: "major" | "middle" | "minor" | "topic";
   depth?: number;
   count?: number;
+}
+
+interface CodexImportPreview {
+  fileName: string;
+  result: CodexClassificationResult;
+  assessments: CodexImportAssessment[];
 }
 
 function MultiSelectFilter({
@@ -386,6 +398,17 @@ async function canvasToPng(canvas: HTMLCanvasElement) {
     canvas.toBlob((result) => result ? resolve(result) : reject(new Error("이미지를 PNG로 변환하지 못했습니다.")), "image/png");
   });
   return { data: new Uint8Array(await blob.arrayBuffer()), width: canvas.width, height: canvas.height };
+}
+
+async function canvasToJpeg(canvas: HTMLCanvasElement, quality = 0.86) {
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (result) => result ? resolve(result) : reject(new Error("문항 이미지를 JPEG로 변환하지 못했습니다.")),
+      "image/jpeg",
+      quality,
+    );
+  });
+  return new Uint8Array(await blob.arrayBuffer());
 }
 
 function QuestionCardPreview({ card, onOpen }: { card: LocalQuestionCardSummary; onOpen?: () => void }) {
@@ -832,6 +855,9 @@ function QuestionCards() {
   const [error, setError] = useState("");
   const [previewCard, setPreviewCard] = useState<LocalQuestionCardSummary | null>(null);
   const [supplementPreview, setSupplementPreview] = useState<{ card: LocalQuestionCardSummary; kind: SupplementPreviewKind } | null>(null);
+  const [codexOperation, setCodexOperation] = useState<"export" | "import" | "apply" | null>(null);
+  const [codexImportPreview, setCodexImportPreview] = useState<CodexImportPreview | null>(null);
+  const codexImportInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -948,6 +974,10 @@ function QuestionCards() {
   const filteredIds = filtered.map((card) => card.id);
   const allFilteredSelected = filteredIds.length > 0 &&
     filteredIds.every((cardId) => selected.includes(cardId));
+  const codexApplyCount = codexImportPreview?.assessments.filter((item) => item.status === "apply").length ?? 0;
+  const codexProtectedCount = codexImportPreview?.assessments.filter((item) => item.status === "protected").length ?? 0;
+  const codexReviewCount = codexImportPreview?.assessments.filter((item) => item.status === "review").length ?? 0;
+  const codexInvalidCount = codexImportPreview?.assessments.filter((item) => item.status === "invalid").length ?? 0;
 
   function resetClassificationFilters() {
     setTerm("");
@@ -1054,6 +1084,125 @@ function QuestionCards() {
       setError(reason instanceof Error ? reason.message : "문항 분류를 저장하지 못했습니다.");
     } finally {
       setSavingCardId("");
+    }
+  }
+
+  async function exportCodexClassificationTask() {
+    if (!selected.length || codexOperation) return;
+    const selectedCards = cards.filter((card) => selected.includes(card.id));
+    if (!selectedCards.length) return;
+    setCodexOperation("export");
+    setError("");
+    setMessage("Codex 분류 작업 파일을 준비하고 있습니다.");
+    try {
+      const documentIds = Array.from(new Set(selectedCards.map((card) => card.documentId)));
+      const textsByDocument = new Map(await Promise.all(documentIds.map(async (documentId) => [
+        documentId,
+        await readQuestionTextsLocally(documentId),
+      ] as const)));
+      const images: Record<string, Uint8Array> = {};
+      const questions = [];
+      for (let index = 0; index < selectedCards.length; index += 1) {
+        const card = selectedCards[index];
+        setMessage(`Codex 작업용 원본 문항 이미지 준비 ${index + 1}/${selectedCards.length}`);
+        const canvas = document.createElement("canvas");
+        await renderQuestionCardPreview(card, canvas, 1.8);
+        const imagePath = `images/question-${String(index + 1).padStart(4, "0")}.jpg`;
+        images[imagePath] = await canvasToJpeg(canvas);
+        const record = textsByDocument.get(card.documentId)?.[card.questionKey];
+        questions.push({
+          questionCardId: card.id,
+          sourceName: card.sourceName,
+          questionNumber: card.sourceQuestionNumber,
+          questionText: record?.questionText ?? "",
+          answerText: record?.answerText ?? "",
+          explanationText: record?.explanationText ?? "",
+          imagePath,
+          currentClassification: card.classification ? {
+            subjectId: card.classification.subjectId,
+            categoryId: card.classification.categoryId,
+            origin: card.classification.origin,
+          } : null,
+        });
+      }
+      const { buildCodexClassificationTaskArchive } = await import("@/lib/codex-classification-exchange");
+      const archive = buildCodexClassificationTaskArchive({
+        taskId: crypto.randomUUID(),
+        generatedAt: new Date().toISOString(),
+        classificationData,
+        questions,
+        images,
+      });
+      const blob = new Blob([Uint8Array.from(archive.bytes)], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = archive.fileName;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      setMessage(`${selectedCards.length}개 문항의 Codex 분류 작업 ZIP을 내려받았습니다. 이 대화에 ZIP을 첨부해 분류를 요청하세요.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Codex 분류 작업 파일을 만들지 못했습니다.");
+    } finally {
+      setCodexOperation(null);
+    }
+  }
+
+  async function previewCodexClassificationResult(file: File) {
+    if (codexOperation) return;
+    setCodexOperation("import");
+    setError("");
+    setMessage("");
+    try {
+      const {
+        assessCodexClassificationResult,
+        parseCodexClassificationResult,
+      } = await import("@/lib/codex-classification-exchange");
+      const result = parseCodexClassificationResult(await file.text());
+      const assessments = assessCodexClassificationResult(result, cards, classificationData);
+      setCodexImportPreview({ fileName: file.name, result, assessments });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Codex 분류 결과를 읽지 못했습니다.");
+    } finally {
+      setCodexOperation(null);
+      if (codexImportInput.current) codexImportInput.current.value = "";
+    }
+  }
+
+  async function applyCodexClassificationResult() {
+    if (!codexImportPreview || codexOperation) return;
+    const applicable = codexImportPreview.assessments.filter((assessment) => assessment.status === "apply");
+    if (!applicable.length) return;
+    const cardsById = new Map(cards.map((card) => [card.id, card]));
+    const values: Record<string, Omit<QuestionClassification, "updatedAt">> = {};
+    applicable.forEach(({ item }) => {
+      const card = cardsById.get(item.questionCardId);
+      if (!card || !item.categoryId) return;
+      values[card.id] = {
+        subjectId: item.subjectId,
+        categoryId: item.categoryId,
+        difficultyOptionId: card.classification?.difficultyOptionId ?? null,
+        questionTypeOptionId: card.classification?.questionTypeOptionId ?? null,
+        tagIds: [...(card.classification?.tagIds ?? [])],
+        origin: "codex_import",
+        autoConfidence: item.confidence,
+        autoReason: `Codex 일괄 분류 · ${item.reason}`,
+        autoAlternatives: [],
+      };
+    });
+    setCodexOperation("apply");
+    setError("");
+    try {
+      const saved = await saveAutoQuestionClassificationsLocally(values);
+      setCards((current) => current.map((card) =>
+        saved[card.id] ? { ...card, classification: saved[card.id] } : card,
+      ));
+      setCodexImportPreview(null);
+      setMessage(`${Object.keys(saved).length}개 문항에 Codex 분류 결과를 적용했습니다. 수동 확정 분류는 변경하지 않았습니다.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Codex 분류 결과를 적용하지 못했습니다.");
+    } finally {
+      setCodexOperation(null);
     }
   }
 
@@ -1231,8 +1380,41 @@ function QuestionCards() {
           검색 결과 전체 선택
           <span className="font-normal text-[#77817c]">({filteredIds.length}개)</span>
         </label>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <span className="text-xs text-[#6d7772]">선택 {selected.length}개</span>
+          <input
+            ref={codexImportInput}
+            type="file"
+            className="hidden"
+            accept=".json,.md,application/json,text/markdown,text/plain"
+            aria-label="Codex 분류 결과 파일"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void previewCodexClassificationResult(file);
+            }}
+          />
+          <button
+            type="button"
+            disabled={!selected.length || Boolean(codexOperation) || Boolean(deletingCardId)}
+            onClick={() => void exportCodexClassificationTask()}
+            className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-[#b9cedd] bg-[#eef6fb] px-3 py-2 text-xs font-semibold text-[#285d7b] transition hover:bg-[#e1f0f8] disabled:opacity-40"
+          >
+            {codexOperation === "export"
+              ? <LoaderCircle className="animate-spin" size={14} />
+              : <Download size={14} />}
+            Codex 작업 내보내기
+          </button>
+          <button
+            type="button"
+            disabled={Boolean(codexOperation) || Boolean(deletingCardId)}
+            onClick={() => codexImportInput.current?.click()}
+            className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-[#c9c1e1] bg-[#f6f2fb] px-3 py-2 text-xs font-semibold text-[#67518a] transition hover:bg-[#eee7f7] disabled:opacity-40"
+          >
+            {codexOperation === "import"
+              ? <LoaderCircle className="animate-spin" size={14} />
+              : <Upload size={14} />}
+            Codex 결과 불러오기
+          </button>
           <button
             type="button"
             disabled={!selected.length || Boolean(deletingCardId) || savingBulkClassification}
@@ -1254,6 +1436,101 @@ function QuestionCards() {
             선택 삭제
           </button>
         </div>
+      </div>
+    )}
+    {codexImportPreview && (
+      <div className="fixed inset-0 z-50 grid place-items-center bg-[#102019]/45 p-4" role="presentation">
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="codex-import-title"
+          className="flex max-h-[88vh] w-full max-w-3xl flex-col rounded-2xl bg-white p-5 shadow-2xl"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 id="codex-import-title" className="text-lg font-bold text-[#18201d]">Codex 분류 결과 검토</h2>
+              <p className="mt-1 text-xs leading-5 text-[#6d7772]">
+                {codexImportPreview.fileName} · 작업 ID {codexImportPreview.result.taskId}
+              </p>
+            </div>
+            <button
+              type="button"
+              aria-label="Codex 결과 검토 닫기"
+              disabled={codexOperation === "apply"}
+              onClick={() => setCodexImportPreview(null)}
+              className="focus-ring rounded-lg p-1.5 text-[#6d7772] hover:bg-[#f1f5f2] disabled:opacity-40"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {[
+              ["적용 가능", codexApplyCount, "bg-[#eef7f1] text-[#1f6b4f]"],
+              ["수동 분류 보호", codexProtectedCount, "bg-[#edf4fb] text-[#315f81]"],
+              ["확인 필요", codexReviewCount, "bg-[#fff6e8] text-[#875b1d]"],
+              ["잘못된 결과", codexInvalidCount, "bg-[#fff0ed] text-[#a34b40]"],
+            ].map(([label, count, className]) => (
+              <div key={String(label)} className={`rounded-xl px-3 py-2 ${className}`}>
+                <span className="block text-[11px] font-medium">{label}</span>
+                <b className="mt-0.5 block text-lg">{count}</b>
+              </div>
+            ))}
+          </div>
+          <p className="mt-4 rounded-xl bg-[#f5f7f6] px-3 py-2 text-xs leading-5 text-[#56635d]">
+            사용자가 직접 저장한 분류는 자동으로 제외됩니다. 존재하지 않는 문항·과목·중단원 ID도 적용되지 않습니다.
+          </p>
+          <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+            {codexImportPreview.assessments.map((assessment) => {
+              const statusStyle = assessment.status === "apply"
+                ? "bg-[#eef7f1] text-[#1f6b4f]"
+                : assessment.status === "protected"
+                  ? "bg-[#edf4fb] text-[#315f81]"
+                  : assessment.status === "review"
+                    ? "bg-[#fff6e8] text-[#875b1d]"
+                    : "bg-[#fff0ed] text-[#a34b40]";
+              const statusLabel = assessment.status === "apply"
+                ? "적용 가능"
+                : assessment.status === "protected"
+                  ? "수동 분류 보호"
+                  : assessment.status === "review"
+                    ? "확인 필요"
+                    : "잘못된 결과";
+              return (
+                <article key={assessment.item.questionCardId} className="rounded-xl border border-[#e3e8e4] p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <code className="break-all text-[11px] text-[#526159]">{assessment.item.questionCardId}</code>
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${statusStyle}`}>{statusLabel}</span>
+                  </div>
+                  {assessment.categoryName && (
+                    <p className="mt-2 text-sm font-semibold text-[#26342e]">
+                      {assessment.subjectName} · {assessment.categoryName}
+                      <span className="ml-2 text-xs font-normal text-[#6d7772]">신뢰도 {Math.round(assessment.item.confidence * 100)}%</span>
+                    </p>
+                  )}
+                  <p className="mt-1 text-xs leading-5 text-[#65716b]">{assessment.item.reason}</p>
+                  <p className="mt-1 text-[11px] font-medium text-[#7b8580]">{assessment.message}</p>
+                </article>
+              );
+            })}
+          </div>
+          <div className="mt-5 flex justify-end gap-2 border-t border-[#edf0ee] pt-4">
+            <button
+              type="button"
+              disabled={codexOperation === "apply"}
+              onClick={() => setCodexImportPreview(null)}
+              className="focus-ring rounded-lg border border-[#dbe2de] px-4 py-2.5 text-sm font-semibold text-[#53615a] hover:bg-[#f5f7f6] disabled:opacity-40"
+            >취소</button>
+            <button
+              type="button"
+              disabled={!codexApplyCount || codexOperation === "apply"}
+              onClick={() => void applyCodexClassificationResult()}
+              className="focus-ring inline-flex items-center gap-2 rounded-lg bg-[#1f6b4f] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#195b43] disabled:opacity-50"
+            >
+              {codexOperation === "apply" && <LoaderCircle className="animate-spin" size={15} />}
+              {codexApplyCount}개 분류 적용
+            </button>
+          </div>
+        </section>
       </div>
     )}
     {bulkClassificationDraft && (
@@ -1391,6 +1668,8 @@ function QuestionCards() {
                   <p className="mt-2 text-[10px] font-medium text-[#6d7772]" title={card.classification.autoReason}>
                     {card.classification.origin === "semantic_auto"
                       ? "브라우저 의미 분석"
+                      : card.classification.origin === "codex_import"
+                        ? "Codex 일괄 분류"
                       : card.classification.origin === "bionic_auto"
                         ? "Bionic 원본 이미지 분석"
                       : card.classification.origin === "gemini_auto"
@@ -1405,7 +1684,7 @@ function QuestionCards() {
               </>
             ) : (
               <div className="mt-3 rounded-lg bg-[#fff5e8] px-2.5 py-2 text-[11px] font-medium text-[#875b1d]">
-                {card.classification?.origin === "semantic_auto" || card.classification?.origin === "bionic_auto" ? (
+                {card.classification?.origin === "semantic_auto" || card.classification?.origin === "bionic_auto" || card.classification?.origin === "codex_import" ? (
                   <>
                     <b>자동 분류 확인 필요</b>
                     {card.classification.autoAlternatives?.length ? (

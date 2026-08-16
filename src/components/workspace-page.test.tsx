@@ -7,6 +7,7 @@ import {
   listLocalExamSets,
   listLocalDocuments,
   listLocalQuestionCards,
+  saveAutoQuestionClassificationsLocally,
   saveLocalExamSet,
   saveQuestionClassificationsLocally,
 } from "@/lib/local-file-store";
@@ -34,7 +35,9 @@ vi.mock("@/lib/local-file-store", () => ({
   listLocalDocuments: vi.fn().mockResolvedValue([]),
   listLocalQuestionCards: vi.fn().mockResolvedValue([]),
   readClassificationLocally: vi.fn().mockResolvedValue(null),
+  readQuestionTextsLocally: vi.fn().mockResolvedValue({}),
   readSourcePdfLocally: vi.fn().mockRejectedValue(new Error("PDF preview is not loaded in this test.")),
+  saveAutoQuestionClassificationsLocally: vi.fn(),
   saveQuestionClassificationLocally: vi.fn(),
   saveQuestionClassificationsLocally: vi.fn(),
   saveLocalExamSet: vi.fn(),
@@ -382,6 +385,63 @@ describe("WorkspacePage local storage UI", () => {
     expect(secondCard).not.toBeNull();
     expect(within(firstCard as HTMLElement).getByText("한국사1")).toBeInTheDocument();
     expect(within(secondCard as HTMLElement).getByText("한국사1")).toBeInTheDocument();
+  });
+
+  it("previews and applies a validated Codex classification result", async () => {
+    vi.mocked(listLocalQuestionCards).mockResolvedValueOnce([{
+      id: "doc-1:q-1",
+      documentId: "doc-1",
+      questionKey: "q-1",
+      sourceQuestionNumber: "1",
+      sourceName: "한국사.pdf",
+      updatedAt: "2026-08-16T00:00:00.000Z",
+      classification: null,
+      regions: [{ pageNumber: 1, xRatio: 0.05, yRatio: 0.1, widthRatio: 0.4, heightRatio: 0.5, sortOrder: 0 }],
+    }]);
+    const saved = {
+      subjectId: "subject-history-2",
+      categoryId: "category-history-2-2-middle-3",
+      difficultyOptionId: null,
+      questionTypeOptionId: null,
+      tagIds: [],
+      origin: "codex_import" as const,
+      autoConfidence: 0.96,
+      autoReason: "Codex 일괄 분류 · 박정희 정부의 사회 통제",
+      autoAlternatives: [],
+      updatedAt: "2026-08-16T00:01:00.000Z",
+    };
+    vi.mocked(saveAutoQuestionClassificationsLocally).mockResolvedValueOnce({ "doc-1:q-1": saved });
+
+    render(<WorkspacePage view="questions" />);
+    await screen.findByText("1번 문항");
+    const file = new File([JSON.stringify({
+      version: 1,
+      format: "question-card-studio-codex-classification-result",
+      taskId: "task-1",
+      generatedAt: "2026-08-16T00:00:00.000Z",
+      classifications: [{
+        questionCardId: "doc-1:q-1",
+        subjectId: "subject-history-2",
+        categoryId: "category-history-2-2-middle-3",
+        confidence: 0.96,
+        reason: "박정희 정부의 사회 통제",
+      }],
+    })], "classification-result.json", { type: "application/json" });
+    fireEvent.change(screen.getByLabelText("Codex 분류 결과 파일"), { target: { files: [file] } });
+
+    const dialog = await screen.findByRole("dialog", { name: "Codex 분류 결과 검토" });
+    expect(dialog).toHaveTextContent("민주화를 위한 노력");
+    fireEvent.click(within(dialog).getByRole("button", { name: "1개 분류 적용" }));
+
+    await waitFor(() => expect(saveAutoQuestionClassificationsLocally).toHaveBeenCalledWith({
+      "doc-1:q-1": expect.objectContaining({
+        subjectId: "subject-history-2",
+        categoryId: "category-history-2-2-middle-3",
+        origin: "codex_import",
+        autoConfidence: 0.96,
+      }),
+    }));
+    expect(screen.getByRole("status")).toHaveTextContent("1개 문항에 Codex 분류 결과를 적용했습니다");
   });
 
   it("removes a question from the current exam without deleting the card", async () => {
