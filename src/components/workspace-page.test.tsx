@@ -153,8 +153,18 @@ describe("WorkspacePage local storage UI", () => {
     }]);
 
     render(<WorkspacePage view="questions" />);
-    expect(await screen.findByText("정답 있음")).toBeInTheDocument();
-    expect(screen.getByText("해설 있음")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "1번 문항 정답 보기" })).toHaveTextContent("정답 있음");
+    expect(screen.getByRole("button", { name: "1번 문항 해설 보기" })).toHaveTextContent("해설 있음");
+
+    fireEvent.click(screen.getByRole("button", { name: "1번 문항 정답 보기" }));
+    expect(screen.getByRole("dialog", { name: "1번 문항 정답" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "정답 미리보기 닫기" }));
+    expect(screen.queryByRole("dialog", { name: "1번 문항 정답" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "1번 문항 해설 보기" }));
+    expect(screen.getByRole("dialog", { name: "1번 문항 해설" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "해설 미리보기 닫기" }));
+    expect(screen.queryByRole("dialog", { name: "1번 문항 해설" })).not.toBeInTheDocument();
 
     fireEvent.mouseEnter(screen.getByRole("button", { name: "1번 문항 전체 미리보기" }));
     expect(screen.queryByRole("dialog", { name: "1번 문항" })).not.toBeInTheDocument();
@@ -334,6 +344,7 @@ describe("WorkspacePage local storage UI", () => {
       difficultyOptionId: "difficulty-mid",
       questionTypeOptionId: "type-choice",
       tagIds: ["tag-source"],
+      origin: "manual" as const,
       updatedAt: "2026-07-25T01:00:00.000Z",
     };
     vi.mocked(saveQuestionClassificationsLocally).mockResolvedValueOnce({

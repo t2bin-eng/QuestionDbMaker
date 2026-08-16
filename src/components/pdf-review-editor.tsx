@@ -3,16 +3,23 @@
 import Link from "next/link";
 import {
   ArrowLeft, Check, CheckCheck, ChevronLeft, ChevronRight, Download, LoaderCircle, Minus, Plus,
-  Redo2, RotateCcw, Save, ScanSearch, Trash2, Undo2, ZoomIn, ZoomOut,
+  Redo2, RotateCcw, Save, ScanSearch, Sparkles, Trash2, Undo2, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFPageProxy, TextItem } from "pdfjs-dist/types/src/display/api";
 import {
   exportReviewTrainingDatasetLocally,
+  listConfirmedClassificationExamplesLocally,
+  listLocalDocuments,
+  readClassificationLocally,
+  readQuestionClassificationsLocally,
   readReviewDraftLocally,
   readSourcePdfLocally,
+  saveAutoQuestionClassificationsLocally,
+  saveQuestionTextsLocally,
   saveReviewDraftLocally,
   saveReviewTrainingSampleLocally,
+  type QuestionClassification,
 } from "@/lib/local-file-store";
 import { inspectPdfLocally, type PdfInspectionSummary } from "@/lib/pdf-inspector-client";
 import {
@@ -24,16 +31,29 @@ import {
   type PdfVisualElement,
 } from "@/lib/question-detection";
 import { buildReviewTrainingSample } from "@/lib/review-training";
+import {
+  buildMiddleUnitCandidates,
+  classifyQuestionLocally,
+  inferSubjectIdFromFileName,
+} from "@/lib/auto-classification";
+import {
+  createDefaultClassificationData,
+  mergeDefaultClassificationData,
+  type ClassificationData,
+} from "@/lib/classification";
+import { classifyWithGeminiFreeTier } from "@/lib/gemini-classification-client";
+import { extractReviewedQuestionTexts } from "@/lib/question-text-extraction";
 import type { RegionType } from "@/types/domain";
 
 interface ReviewDraft {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   documentId: string;
   fileName?: string;
   pageCount: number;
   regions: EditableRegion[];
   automaticRegions?: EditableRegion[];
   inspection?: PdfInspectionSummary | null;
+  classificationSubjectId?: string;
   savedAt: string;
 }
 
@@ -265,6 +285,7 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
   const regionsRef = useRef<EditableRegion[]>([]);
   const automaticRegionsRef = useRef<EditableRegion[]>([]);
   const inspectionRef = useRef<PdfInspectionSummary | null>(null);
+  const pageContentsRef = useRef<PdfPageTextContent[]>([]);
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [fileName, setFileName] = useState("source.pdf");
   const [pageNumber, setPageNumber] = useState(1);
@@ -282,10 +303,13 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
   const [detecting, setDetecting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [exportingTraining, setExportingTraining] = useState(false);
+  const [classifying, setClassifying] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [message, setMessage] = useState("PDF를 불러오는 중입니다.");
   const [ocrPages, setOcrPages] = useState<number[]>([]);
   const [inspection, setInspection] = useState<PdfInspectionSummary | null>(null);
+  const [classificationData, setClassificationData] = useState<ClassificationData>(() => createDefaultClassificationData());
+  const [classificationSubjectId, setClassificationSubjectId] = useState("");
 
   const runDetection = useCallback(async (document: PDFDocumentProxy) => {
     setDetecting(true);
@@ -299,6 +323,7 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
         if (!hasExtractableText(fragments)) imageOnlyPages.push(pageNo);
         pages.push({ pageNumber: pageNo, pageWidth: width, pageHeight: height, fragments, visuals });
       }
+      pageContentsRef.current = pages;
       const detected: EditableRegion[] = detectDocumentQuestionRegions(pages);
       setUndoStack((stack) => [...stack, regionsRef.current]);
       setRedoStack([]);
@@ -326,7 +351,16 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
     let cancelled = false;
     async function load() {
       try {
-        const file = await readSourcePdfLocally(documentId);
+        const [file, documentSummaries, storedClassification, storedQuestionClassifications] = await Promise.all([
+          readSourcePdfLocally(documentId),
+          listLocalDocuments(),
+          readClassificationLocally<ClassificationData>(),
+          readQuestionClassificationsLocally(),
+        ]);
+        const availableClassification = storedClassification?.version === 1
+          ? mergeDefaultClassificationData(storedClassification)
+          : createDefaultClassificationData();
+        const originalFileName = documentSummaries.find((item) => item.documentId === documentId)?.fileName ?? file.name;
         const pdfjs = await import("pdfjs-dist");
         pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
         const sourceBuffer = await file.arrayBuffer();
@@ -335,10 +369,23 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
         const inspected = await inspectionPromise;
         if (cancelled) return;
         setPdf(document);
-        setFileName(file.name);
+        setClassificationData(availableClassification);
         setInspection(inspected);
         inspectionRef.current = inspected;
         const draft = await readReviewDraftLocally<ReviewDraft>(documentId);
+        const displayFileName = draft?.fileName && draft.fileName !== "source.pdf"
+          ? draft.fileName
+          : originalFileName;
+        setFileName(displayFileName);
+        const existingSubjectId = Object.entries(storedQuestionClassifications)
+          .find(([questionCardId]) => questionCardId.startsWith(`${documentId}:`))?.[1].subjectId;
+        setClassificationSubjectId(
+          draft?.classificationSubjectId ??
+          existingSubjectId ??
+          inferSubjectIdFromFileName(availableClassification, displayFileName) ??
+          availableClassification.subjects.find((subject) => subject.isActive)?.id ??
+          "",
+        );
         const hasManualReview = draft?.regions.some((region) => region.status !== "auto_detected");
         if (draft?.regions.length && (draft.version >= 5 || hasManualReview)) {
           const compatibleRegions = draft.regions.map((region) => ({
@@ -514,18 +561,133 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   }
 
-  async function saveDraft(regionsToSave = regions) {
+  async function collectPageContents() {
+    if (!pdf) return [];
+    if (pageContentsRef.current.length === pdf.numPages) return pageContentsRef.current;
+    const pages: PdfPageTextContent[] = [];
+    for (let pageNo = 1; pageNo <= pdf.numPages; pageNo += 1) {
+      const page = await pdf.getPage(pageNo);
+      const { fragments, visuals, width, height } = await extractPageFragments(page);
+      pages.push({ pageNumber: pageNo, pageWidth: width, pageHeight: height, fragments, visuals });
+    }
+    pageContentsRef.current = pages;
+    return pages;
+  }
+
+  async function runAutomaticClassification(
+    reviewedRegions: EditableRegion[],
+    force = false,
+  ) {
+    if (!pdf || !classificationSubjectId) return "자동 분류 과목을 선택해 주세요.";
+    setClassifying(true);
+    try {
+      setMessage("검수 문항의 텍스트를 추출하고 있습니다.");
+      const pages = await collectPageContents();
+      const textRecords = extractReviewedQuestionTexts(pages, reviewedRegions);
+      await saveQuestionTextsLocally(documentId, textRecords);
+      const [existingClassifications, confirmedExamples] = await Promise.all([
+        readQuestionClassificationsLocally(),
+        listConfirmedClassificationExamplesLocally(classificationSubjectId),
+      ]);
+      const candidates = buildMiddleUnitCandidates(classificationData, classificationSubjectId);
+      if (candidates.length < 2) return "선택한 과목에 활성 중단원이 충분하지 않습니다.";
+      const subjectName = classificationData.subjects.find((subject) => subject.id === classificationSubjectId)?.name ?? "역사";
+      const pendingRecords = textRecords.filter((record) => {
+        const existing = existingClassifications[`${documentId}:${record.questionKey}`];
+        if (!existing) return true;
+        if (!force) return false;
+        return Boolean(existing.origin && existing.origin !== "manual");
+      });
+      if (!pendingRecords.length) return "기존 수동 분류를 유지했습니다.";
+
+      const localResults = pendingRecords.map((record) => ({
+        record,
+        result: classifyQuestionLocally(record, candidates, confirmedExamples),
+      }));
+      const values: Record<string, Omit<QuestionClassification, "updatedAt">> = {};
+      let localCount = 0;
+      localResults.filter(({ result }) => result.isConfident && result.candidates[0]).forEach(({ record, result }) => {
+        const first = result.candidates[0];
+        values[`${documentId}:${record.questionKey}`] = {
+          subjectId: classificationSubjectId,
+          categoryId: first.categoryId,
+          difficultyOptionId: null,
+          questionTypeOptionId: null,
+          tagIds: [],
+          origin: "local_auto",
+          autoConfidence: result.confidence,
+          autoReason: result.reason,
+          autoAlternatives: result.candidates,
+        };
+        localCount += 1;
+      });
+
+      const ambiguous = localResults.filter(({ record, result }) =>
+        !result.isConfident &&
+        result.candidates.length > 0 &&
+        Boolean(record.questionText || record.answerText || record.explanationText));
+      let geminiCount = 0;
+      let geminiError = "";
+      for (let start = 0; start < ambiguous.length; start += 20) {
+        const batch = ambiguous.slice(start, start + 20);
+        setMessage(`애매한 문항 ${Math.min(start + batch.length, ambiguous.length)}/${ambiguous.length}개를 제미나이 무료 등급으로 확인하고 있습니다.`);
+        try {
+          const response = await classifyWithGeminiFreeTier({
+            subjectName,
+            candidates,
+            questions: batch.map(({ record, result }) => ({
+              ...record,
+              localCandidates: result.candidates,
+            })),
+          });
+          response.results.forEach((answer) => {
+            const local = batch.find(({ record }) => record.questionKey === answer.questionKey)?.result;
+            const selected = candidates.find((candidate) => candidate.id === answer.categoryId);
+            if (!local || !selected) return;
+            values[`${documentId}:${answer.questionKey}`] = {
+              subjectId: classificationSubjectId,
+              categoryId: answer.categoryId,
+              difficultyOptionId: null,
+              questionTypeOptionId: null,
+              tagIds: [],
+              origin: "gemini_auto",
+              autoConfidence: answer.confidence,
+              autoReason: answer.reason,
+              autoAlternatives: local.candidates,
+            };
+            geminiCount += 1;
+          });
+        } catch (error) {
+          geminiError = error instanceof Error ? error.message : "제미나이 무료 분류를 사용할 수 없습니다.";
+          break;
+        }
+      }
+      await saveAutoQuestionClassificationsLocally(values);
+      const remainingCount = pendingRecords.length - localCount - geminiCount;
+      const summary = `중단원 자동 분류 ${localCount + geminiCount}개 완료 (로컬 ${localCount}, Gemini 무료 ${geminiCount})`;
+      return [
+        summary,
+        remainingCount ? `확인 필요 ${remainingCount}개` : "",
+        geminiError,
+      ].filter(Boolean).join(" · ");
+    } finally {
+      setClassifying(false);
+    }
+  }
+
+  async function saveDraft(regionsToSave = regions, forceAutoClassification = false) {
     if (!pdf) return;
     setSaving(true);
     try {
       const draft: ReviewDraft = {
-        version: 7,
+        version: 8,
         documentId,
         fileName,
         pageCount: pdf.numPages,
         regions: regionsToSave,
         automaticRegions: automaticRegionsRef.current,
         inspection,
+        classificationSubjectId,
         savedAt: new Date().toISOString(),
       };
       await saveReviewDraftLocally(documentId, draft);
@@ -540,7 +702,17 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
       });
       await saveReviewTrainingSampleLocally(documentId, trainingSample);
       setDirty(false);
-      setMessage(`검수 초안을 저장했습니다. ${regionsToSave.length}개 영역`);
+      if (regionsToSave.length > 0 && regionsToSave.every((region) => region.status === "reviewed")) {
+        try {
+          const classificationMessage = await runAutomaticClassification(regionsToSave, forceAutoClassification);
+          setMessage(`검수 초안을 저장했습니다. ${classificationMessage}`);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : "중단원 자동 분류에 실패했습니다.";
+          setMessage(`검수 초안은 저장했습니다. ${detail}`);
+        }
+      } else {
+        setMessage(`검수 초안을 저장했습니다. ${regionsToSave.length}개 영역`);
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "검수 초안을 저장하지 못했습니다.");
     } finally {
@@ -575,7 +747,6 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
     const reviewedRegions: EditableRegion[] = regions.map((region) => ({ ...region, status: "reviewed" }));
     commit(reviewedRegions);
     await saveDraft(reviewedRegions);
-    setMessage(`${pendingCount}개 영역을 일괄 검수 완료하고 저장했습니다.`);
   }
 
   async function exportTrainingDataset() {
@@ -596,6 +767,9 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
   ).values());
   const pendingReviewCount = regions.filter((region) => region.status !== "reviewed").length;
   const selectedRegion = regions.find((region) => region.id === selectedId) ?? null;
+  const activeSubjects = classificationData.subjects
+    .filter((subject) => subject.isActive)
+    .sort((left, right) => left.sortOrder - right.sortOrder);
 
   return (
     <div className="min-h-screen bg-[#edf0ed] text-[#17211d]">
@@ -629,8 +803,8 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
         <button onClick={deleteSelected} disabled={!selectedId} className={buttonClass}><Trash2 size={16} />삭제</button>
         <button onClick={undo} disabled={!undoStack.length} className={buttonClass} aria-label="실행 취소"><Undo2 size={16} /></button>
         <button onClick={redo} disabled={!redoStack.length} className={buttonClass} aria-label="다시 실행"><Redo2 size={16} /></button>
-        <button onClick={() => void saveDraft()} disabled={!pdf || saving} className={primaryButtonClass}>
-          {saving ? <LoaderCircle className="animate-spin" size={16} /> : <Save size={16} />}초안 저장
+        <button onClick={() => void saveDraft()} disabled={!pdf || saving || classifying} className={primaryButtonClass}>
+          {saving || classifying ? <LoaderCircle className="animate-spin" size={16} /> : <Save size={16} />}초안 저장
         </button>
         <button onClick={() => void exportTrainingDataset()} disabled={exportingTraining} className={buttonClass}>
           {exportingTraining ? <LoaderCircle className="animate-spin" size={16} /> : <Download size={16} />}학습 데이터
@@ -726,6 +900,22 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
             </div>
             {dirty && <span className="rounded-full bg-[#fff0dc] px-2 py-1 text-[10px] font-bold text-[#9a6019]">저장 안 됨</span>}
           </div>
+          <label className="mt-4 block rounded-xl border border-[#dbe3de] bg-[#f8faf8] p-3 text-xs font-semibold text-[#53615a]">
+            중단원 자동 분류 과목
+            <select
+              aria-label="중단원 자동 분류 과목"
+              value={classificationSubjectId}
+              disabled={saving || classifying}
+              onChange={(event) => {
+                setClassificationSubjectId(event.target.value);
+                setDirty(true);
+              }}
+              className="mt-2 w-full rounded-lg border border-[#d6ded9] bg-white px-3 py-2 text-sm text-[#17211d]"
+            >
+              {activeSubjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
+            </select>
+            <span className="mt-2 block font-normal leading-5 text-[#738078]">확실한 문항은 로컬에서, 애매한 문항만 Gemini 무료 등급으로 분류합니다.</span>
+          </label>
           {inspection && (
             <div className="mt-4 rounded-xl border border-[#cddfd5] bg-[#f1f8f4] p-3 text-xs leading-5 text-[#315b49]">
               <b className="block text-sm text-[#1f6b4f]">정밀 PDF 판별</b>
@@ -768,7 +958,17 @@ export function PdfReviewEditor({ documentId }: { documentId: string }) {
               </select>
             </label>
             <button onClick={markReviewed} disabled={!selectedId} className={`${primaryButtonClass} w-full`}><Check size={16} />이 영역 검수 완료</button>
-            <button onClick={() => void markAllReviewed()} disabled={!pendingReviewCount || saving} className={`${primaryButtonClass} w-full`}><CheckCheck size={16} />일괄 검수 완료</button>
+            <button onClick={() => void markAllReviewed()} disabled={!pendingReviewCount || saving || classifying} className={`${primaryButtonClass} w-full`}><CheckCheck size={16} />일괄 검수 완료</button>
+            {!pendingReviewCount && regions.length > 0 && (
+              <button
+                onClick={() => void saveDraft(regions, true)}
+                disabled={saving || classifying || !classificationSubjectId}
+                className={`${buttonClass} w-full`}
+              >
+                {classifying ? <LoaderCircle className="animate-spin" size={16} /> : <Sparkles size={16} />}
+                중단원 자동 분류 다시 실행
+              </button>
+            )}
             <button onClick={() => pdf && void runDetection(pdf)} disabled={!pdf || detecting} className={`${buttonClass} w-full`}><RotateCcw size={16} />현재 제안 초기화</button>
           </div>
         </aside>

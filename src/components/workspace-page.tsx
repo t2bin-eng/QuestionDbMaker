@@ -38,7 +38,7 @@ import {
 } from "@/lib/local-file-store";
 import { createHwpxPackage, type HwpxQuestionImage } from "@/lib/hwpx";
 import { CategoriesManager } from "@/components/categories-manager";
-import { createExamPdf, type ExamPdfQuestion } from "@/lib/exam-pdf";
+import { createExamPdf, findQuestionStemInsertionY, type ExamPdfQuestion } from "@/lib/exam-pdf";
 import {
   createDefaultClassificationData,
   CATEGORY_TYPE_LABELS,
@@ -313,18 +313,48 @@ async function renderQuestionCardCanvas(card: LocalQuestionCardSummary, score: n
   const canvas = score === null ? renderedCanvas : document.createElement("canvas");
   if (score !== null) {
     const scoreBarHeight = Math.max(36, Math.round(renderedCanvas.width * 0.045));
+    const renderedContext = renderedCanvas.getContext("2d", { willReadFrequently: true });
+    if (!renderedContext) throw new Error("배점 위치를 분석하지 못했습니다.");
+    const pixels = renderedContext.getImageData(0, 0, renderedCanvas.width, renderedCanvas.height).data;
+    const inkPixelsByRow = Array.from({ length: renderedCanvas.height }, () => 0);
+    for (let y = 0; y < renderedCanvas.height; y += 1) {
+      let inkCount = 0;
+      for (let x = 0; x < renderedCanvas.width; x += 1) {
+        const offset = (y * renderedCanvas.width + x) * 4;
+        const red = pixels[offset];
+        const green = pixels[offset + 1];
+        const blue = pixels[offset + 2];
+        const alpha = pixels[offset + 3];
+        const darkest = Math.min(red, green, blue);
+        const lightest = Math.max(red, green, blue);
+        if (alpha > 20 && (darkest < 238 || (lightest - darkest > 18 && darkest < 248))) inkCount += 1;
+      }
+      inkPixelsByRow[y] = inkCount;
+    }
+    const insertionY = findQuestionStemInsertionY(inkPixelsByRow, renderedCanvas.width);
     canvas.width = renderedCanvas.width;
     canvas.height = renderedCanvas.height + scoreBarHeight;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("배점을 문항 이미지에 표시하지 못했습니다.");
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(renderedCanvas, 0, 0, renderedCanvas.width, insertionY, 0, 0, renderedCanvas.width, insertionY);
     context.fillStyle = "#202622";
-    context.font = `600 ${Math.max(24, Math.round(scoreBarHeight * 0.62))}px sans-serif`;
+    context.font = `600 ${Math.max(24, Math.round(scoreBarHeight * 0.62))}px "Malgun Gothic", "Noto Sans KR", sans-serif`;
     context.textAlign = "right";
     context.textBaseline = "middle";
-    context.fillText(`[${score}점]`, canvas.width - 8, scoreBarHeight / 2);
-    context.drawImage(renderedCanvas, 0, scoreBarHeight);
+    context.fillText(`[${score}점]`, canvas.width - 8, insertionY + scoreBarHeight / 2);
+    context.drawImage(
+      renderedCanvas,
+      0,
+      insertionY,
+      renderedCanvas.width,
+      renderedCanvas.height - insertionY,
+      0,
+      insertionY + scoreBarHeight,
+      renderedCanvas.width,
+      renderedCanvas.height - insertionY,
+    );
   }
   return canvas;
 }
@@ -440,6 +470,68 @@ function FullQuestionPreview({ card, onClose }: { card: LocalQuestionCardSummary
         </header>
         <div className="min-h-0 flex-1 overflow-auto bg-[#eef1ee] p-5 text-center">
           {error ? <p className="rounded-xl bg-white p-5 text-sm text-[#8a5d22]">{error}</p> : <canvas ref={canvasRef} className="mx-auto max-w-full bg-white shadow" />}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+type SupplementPreviewKind = "answer" | "explanation";
+
+function QuestionSupplementPreview({ card, kind, onClose }: {
+  card: LocalQuestionCardSummary;
+  kind: SupplementPreviewKind;
+  onClose: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const label = kind === "answer" ? "정답" : "해설";
+  const title = card.sourceQuestionNumber ? `${card.sourceQuestionNumber}번 문항 ${label}` : `문항 ${label}`;
+
+  useEffect(() => {
+    let cancelled = false;
+    const regions = kind === "answer" ? card.answerRegions ?? [] : card.explanationRegions ?? [];
+    if (canvasRef.current) {
+      void renderQuestionCardPreview(card, canvasRef.current, 2.25, [...regions])
+        .catch(() => {
+          if (!cancelled) setError(`${label} 미리보기를 불러오지 못했습니다.`);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [card, kind, label, onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[75] grid place-items-center bg-[#0b1c15]/65 p-4" role="presentation" onMouseDown={onClose}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="supplement-preview-title"
+        onMouseDown={(event) => event.stopPropagation()}
+        className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+      >
+        <header className="flex items-start justify-between gap-4 border-b border-[#e3e8e4] px-5 py-4">
+          <div>
+            <h2 id="supplement-preview-title" className="text-lg font-bold">{title}</h2>
+            <p className="mt-1 text-xs text-[#6d7772]">{card.sourceName}</p>
+          </div>
+          <button type="button" aria-label={`${label} 미리보기 닫기`} className="focus-ring rounded-lg p-2 hover:bg-[#f2f4f1]" onClick={onClose}><X size={20} /></button>
+        </header>
+        <div className="relative min-h-40 flex-1 overflow-auto bg-[#eef1ee] p-5 text-center">
+          {loading && <div className="absolute inset-0 grid place-items-center"><LoaderCircle className="animate-spin text-[#1f6b4f]" size={28} /></div>}
+          {error
+            ? <p className="rounded-xl bg-white p-5 text-sm text-[#8a5d22]">{error}</p>
+            : <canvas ref={canvasRef} className={`mx-auto max-w-full bg-white shadow ${loading ? "invisible" : "visible"}`} />}
         </div>
       </section>
     </div>
@@ -732,6 +824,7 @@ function QuestionCards() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [previewCard, setPreviewCard] = useState<LocalQuestionCardSummary | null>(null);
+  const [supplementPreview, setSupplementPreview] = useState<{ card: LocalQuestionCardSummary; kind: SupplementPreviewKind } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1262,16 +1355,41 @@ function QuestionCards() {
             <p className="mt-2 truncate text-xs text-[#6d7772]" title={card.sourceName}>{card.sourceName}</p>
             {((card.answerRegions?.length ?? 0) > 0 || (card.explanationRegions?.length ?? 0) > 0) && (
               <div className="mt-2 flex gap-1.5">
-                {(card.answerRegions?.length ?? 0) > 0 && <span className="rounded-full bg-[#e8f2ff] px-2 py-1 text-[10px] font-semibold text-[#245f98]">정답 있음</span>}
-                {(card.explanationRegions?.length ?? 0) > 0 && <span className="rounded-full bg-[#f2ebfb] px-2 py-1 text-[10px] font-semibold text-[#6f4799]">해설 있음</span>}
+                {(card.answerRegions?.length ?? 0) > 0 && (
+                  <button
+                    type="button"
+                    aria-label={`${card.sourceQuestionNumber ?? ""}번 문항 정답 보기`}
+                    onClick={() => setSupplementPreview({ card, kind: "answer" })}
+                    className="focus-ring rounded-full bg-[#e8f2ff] px-2 py-1 text-[10px] font-semibold text-[#245f98] transition hover:bg-[#d8eaff]"
+                  >정답 있음</button>
+                )}
+                {(card.explanationRegions?.length ?? 0) > 0 && (
+                  <button
+                    type="button"
+                    aria-label={`${card.sourceQuestionNumber ?? ""}번 문항 해설 보기`}
+                    onClick={() => setSupplementPreview({ card, kind: "explanation" })}
+                    className="focus-ring rounded-full bg-[#f2ebfb] px-2 py-1 text-[10px] font-semibold text-[#6f4799] transition hover:bg-[#e8dcf7]"
+                  >해설 있음</button>
+                )}
               </div>
             )}
             {card.classification ? (
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {classificationLabels(card).slice(0, 5).map((label, index) => (
-                  <span key={`${label}-${index}`} className="rounded-full bg-[#eef5f0] px-2 py-1 text-[10px] font-semibold text-[#1f6b4f]">{label}</span>
-                ))}
-              </div>
+              <>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {classificationLabels(card).slice(0, 5).map((label, index) => (
+                    <span key={`${label}-${index}`} className="rounded-full bg-[#eef5f0] px-2 py-1 text-[10px] font-semibold text-[#1f6b4f]">{label}</span>
+                  ))}
+                </div>
+                {card.classification.origin && card.classification.origin !== "manual" && (
+                  <p className="mt-2 text-[10px] font-medium text-[#6d7772]" title={card.classification.autoReason}>
+                    {card.classification.origin === "gemini_auto" ? "Gemini 무료 보강" : "로컬 자동 분류"}
+                    {typeof card.classification.autoConfidence === "number"
+                      ? ` · 신뢰도 ${Math.round(card.classification.autoConfidence * 100)}%`
+                      : ""}
+                    {" · 분류 설정에서 확인하면 학습 데이터로 반영"}
+                  </p>
+                )}
+              </>
             ) : (
               <p className="mt-3 rounded-lg bg-[#fff5e8] px-2.5 py-2 text-[11px] font-medium text-[#875b1d]">분류 미지정</p>
             )}
@@ -1347,6 +1465,13 @@ function QuestionCards() {
       ))}
     </div>
     {previewCard && <FullQuestionPreview card={previewCard} onClose={() => setPreviewCard(null)} />}
+    {supplementPreview && (
+      <QuestionSupplementPreview
+        card={supplementPreview.card}
+        kind={supplementPreview.kind}
+        onClose={() => setSupplementPreview(null)}
+      />
+    )}
   </>;
 }
 
@@ -1554,12 +1679,14 @@ function ExamSets() {
     const questions: ExamPdfQuestion[] = [];
     for (let index = 0; index < selectedCards.length; index += 1) {
       const card = selectedCards[index];
+      const score = Math.max(1, scores[card.id] ?? 2);
       setExportMessage(`${index + 1}/${selectedCards.length}번 문항을 PDF에 배치하고 있습니다.`);
       questions.push({
-        canvas: await renderQuestionCardCanvas(card, null),
+        canvas: await renderQuestionCardCanvas(card, showScores ? score : null),
         solutionCanvas: await renderQuestionSolutionCanvas(card),
         label: `${index + 1}번`,
-        score: Math.max(1, scores[card.id] ?? 2),
+        score,
+        scoreEmbedded: showScores,
       });
     }
     setExportMessage("A4 PDF 페이지를 조립하고 있습니다.");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateQuestionSlots } from "./exam-pdf";
+import { calculateQuestionSlots, findQuestionStemInsertionY } from "./exam-pdf";
 
 describe("calculateQuestionSlots", () => {
   it("fills the left column top-to-bottom before the right column", () => {
@@ -26,5 +26,14 @@ describe("calculateQuestionSlots", () => {
       expect(slot.width).toBeGreaterThan(650);
       expect(slot.height).toBeGreaterThan(550);
     });
+  });
+
+  it("places the score in the whitespace after a multi-line question stem", () => {
+    const rows = Array.from({ length: 260 }, () => 0);
+    for (let row = 10; row <= 30; row += 1) rows[row] = 80;
+    for (let row = 36; row <= 56; row += 1) rows[row] = 95;
+    for (let row = 82; row <= 230; row += 1) rows[row] = 120;
+
+    expect(findQuestionStemInsertionY(rows, 1000)).toBe(57);
   });
 });

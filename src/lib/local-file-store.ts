@@ -1,5 +1,10 @@
 import type { ReviewTrainingSample } from "./review-training";
 import type { RegionType } from "@/types/domain";
+import type {
+  ConfirmedClassificationExample,
+  QuestionTextRecord,
+  RankedClassificationCandidate,
+} from "./auto-classification";
 import {
   createDatabaseBackupArchive,
   parseDatabaseBackupArchive,
@@ -117,12 +122,23 @@ export interface QuestionClassification {
   difficultyOptionId: string | null;
   questionTypeOptionId: string | null;
   tagIds: string[];
+  origin?: "manual" | "local_auto" | "gemini_auto";
+  autoConfidence?: number;
+  autoReason?: string;
+  autoAlternatives?: RankedClassificationCandidate[];
   updatedAt: string;
 }
 
 interface StoredQuestionClassifications {
   version: 1;
   items: Record<string, QuestionClassification>;
+  updatedAt: string;
+}
+
+interface StoredQuestionTexts {
+  version: 1;
+  documentId: string;
+  items: Record<string, QuestionTextRecord>;
   updatedAt: string;
 }
 
@@ -660,6 +676,7 @@ export async function saveQuestionClassificationsLocally(
     {
       ...classification,
       tagIds: [...classification.tagIds],
+      origin: classification.origin ?? "manual",
       updatedAt,
     } satisfies QuestionClassification,
   ]));
@@ -672,6 +689,117 @@ export async function saveQuestionClassificationsLocally(
     updatedAt,
   } satisfies StoredQuestionClassifications);
   return values;
+}
+
+export async function saveAutoQuestionClassificationsLocally(
+  values: Record<string, Omit<QuestionClassification, "updatedAt">>,
+) {
+  const entries = Object.entries(values);
+  if (!entries.length) return {};
+  const root = await getWritableRootDirectory();
+  const directory = await ensureDirectory(root, ["metadata"]);
+  const stored = await readOptionalJson<StoredQuestionClassifications>(
+    directory,
+    "question-classifications.json",
+  );
+  const updatedAt = new Date().toISOString();
+  const existingItems = stored?.version === 1 ? stored.items : {};
+  const saved = Object.fromEntries(entries.flatMap(([questionCardId, classification]) => {
+    const existing = existingItems[questionCardId];
+    if (existing && (!existing.origin || existing.origin === "manual")) return [];
+    return [[questionCardId, {
+      ...classification,
+      tagIds: [...classification.tagIds],
+      updatedAt,
+    } satisfies QuestionClassification]];
+  }));
+  if (!Object.keys(saved).length) return {};
+  await writeJsonFile(directory, "question-classifications.json", {
+    version: 1,
+    items: { ...existingItems, ...saved },
+    updatedAt,
+  } satisfies StoredQuestionClassifications);
+  return saved;
+}
+
+export async function saveQuestionTextsLocally(
+  documentId: string,
+  records: QuestionTextRecord[],
+) {
+  const root = await getWritableRootDirectory();
+  const directory = await ensureDirectory(root, ["documents", documentId]);
+  const updatedAt = new Date().toISOString();
+  const items = Object.fromEntries(records.map((record) => [record.questionKey, record]));
+  await writeJsonFile(directory, "question-texts.json", {
+    version: 1,
+    documentId,
+    items,
+    updatedAt,
+  } satisfies StoredQuestionTexts);
+  return items;
+}
+
+export async function readQuestionTextsLocally(documentId: string) {
+  try {
+    const root = await getReadableRootDirectory();
+    const documentsDirectory = await root.getDirectoryHandle("documents");
+    const directory = await documentsDirectory.getDirectoryHandle(documentId);
+    const stored = await readOptionalJson<StoredQuestionTexts>(directory, "question-texts.json");
+    return stored?.version === 1 ? stored.items : {};
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "NotFoundError") return {};
+    throw error;
+  }
+}
+
+export async function listConfirmedClassificationExamplesLocally(
+  subjectId: string,
+): Promise<ConfirmedClassificationExample[]> {
+  const root = await getReadableRootDirectory();
+  let classifications: Record<string, QuestionClassification> = {};
+  try {
+    const metadataDirectory = await root.getDirectoryHandle("metadata");
+    const stored = await readOptionalJson<StoredQuestionClassifications>(
+      metadataDirectory,
+      "question-classifications.json",
+    );
+    if (stored?.version === 1) classifications = stored.items;
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+  }
+
+  let documentsDirectory: FileSystemDirectoryHandle;
+  try {
+    documentsDirectory = await root.getDirectoryHandle("documents");
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "NotFoundError") return [];
+    throw error;
+  }
+
+  const examples: ConfirmedClassificationExample[] = [];
+  const iterable = documentsDirectory as IterableDirectoryHandle;
+  for await (const [documentId, handle] of iterable.entries()) {
+    if (handle.kind !== "directory") continue;
+    const directory = handle as FileSystemDirectoryHandle;
+    const stored = await readOptionalJson<StoredQuestionTexts>(directory, "question-texts.json");
+    if (stored?.version !== 1) continue;
+    Object.values(stored.items).forEach((record) => {
+      const questionCardId = `${documentId}:${record.questionKey}`;
+      const classification = classifications[questionCardId];
+      if (
+        classification?.subjectId !== subjectId ||
+        !classification.categoryId ||
+        (classification.origin && classification.origin !== "manual")
+      ) return;
+      examples.push({
+        ...record,
+        questionCardId,
+        subjectId,
+        categoryId: classification.categoryId,
+      });
+    });
+  }
+  return examples;
 }
 
 export async function saveReviewDraftLocally(documentId: string, draft: unknown) {

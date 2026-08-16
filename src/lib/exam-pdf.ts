@@ -3,6 +3,7 @@ export interface ExamPdfQuestion {
   solutionCanvas?: HTMLCanvasElement | null;
   label?: string;
   score: number;
+  scoreEmbedded?: boolean;
 }
 
 export interface ExamPdfOptions {
@@ -51,6 +52,43 @@ export function calculateQuestionSlots(questionsPerPage: 4 | 6): PdfQuestionSlot
       height: rowHeight,
     };
   });
+}
+
+export function findQuestionStemInsertionY(
+  inkPixelsByRow: number[],
+  canvasWidth: number,
+) {
+  if (!inkPixelsByRow.length) return 0;
+  const inkThreshold = Math.max(2, Math.round(canvasWidth * 0.002));
+  const firstInk = inkPixelsByRow.findIndex((count) => count >= inkThreshold);
+  if (firstInk < 0) return 0;
+  const minimumStemHeight = Math.max(18, Math.round(canvasWidth * 0.018));
+  const minimumGapHeight = Math.max(8, Math.round(canvasWidth * 0.017));
+  const searchLimit = Math.min(
+    inkPixelsByRow.length - 1,
+    Math.max(firstInk + minimumStemHeight + minimumGapHeight, Math.round(inkPixelsByRow.length * 0.45)),
+  );
+
+  let row = firstInk;
+  while (row <= searchLimit) {
+    if (inkPixelsByRow[row] >= inkThreshold) {
+      row += 1;
+      continue;
+    }
+    const gapStart = row;
+    while (row <= searchLimit && inkPixelsByRow[row] < inkThreshold) row += 1;
+    const gapHeight = row - gapStart;
+    if (
+      gapStart >= firstInk + minimumStemHeight &&
+      gapHeight >= minimumGapHeight &&
+      row < inkPixelsByRow.length
+    ) return gapStart;
+  }
+
+  return Math.min(
+    inkPixelsByRow.length,
+    firstInk + Math.max(minimumStemHeight, Math.round(inkPixelsByRow.length * 0.12)),
+  );
 }
 
 function drawCenteredText(
@@ -151,7 +189,8 @@ function drawQuestion(
   showScores: boolean,
 ) {
   const innerPadding = 14;
-  const scoreHeight = showScores ? 34 : 6;
+  const drawScoreSeparately = showScores && !question.scoreEmbedded;
+  const scoreHeight = drawScoreSeparately ? 34 : 6;
   const availableWidth = slot.width - innerPadding * 2;
   const availableHeight = slot.height - innerPadding * 2 - scoreHeight;
   const scale = Math.min(
@@ -164,7 +203,7 @@ function drawQuestion(
   const drawX = slot.x + innerPadding;
   const drawY = slot.y + scoreHeight + innerPadding;
 
-  if (showScores) {
+  if (drawScoreSeparately) {
     context.fillStyle = "#4c5751";
     context.font = '600 19px "Malgun Gothic", "Noto Sans KR", sans-serif';
     context.textAlign = "right";
