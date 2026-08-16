@@ -461,6 +461,35 @@ describe("question detection", () => {
       .toBeLessThan(firstQuestionRegions.find((region) => region.regionType === "answer")!.yRatio);
   });
 
+  it("keeps a cross-column '정답 찾기' heading inside the explanation", () => {
+    const regions = detectDocumentQuestionRegions([{
+      pageNumber: 6,
+      pageWidth: 600,
+      pageHeight: 800,
+      fragments: [
+        { text: "20. 다음 변화의 배경으로 옳은 것은?", x: 25, y: 500, width: 210, height: 10 },
+        { text: "① 선택지", x: 25, y: 650, width: 60, height: 9 },
+        { text: "정답 ②", x: 140, y: 750, width: 55, height: 9 },
+        { text: "해설", x: 320, y: 50, width: 25, height: 9 },
+        { text: "정답 찾기 한국 경제는 성장하였다.", x: 320, y: 80, width: 190, height: 9 },
+        { text: "오답 피하기 선택지의 근거를 확인한다.", x: 320, y: 130, width: 210, height: 9 },
+        { text: "21. 빈칸에 들어갈 말은?", x: 320, y: 200, width: 150, height: 10 },
+        { text: "① 선택지", x: 320, y: 260, width: 60, height: 9 },
+      ],
+    }]);
+
+    const questionTwenty = regions.filter((region) => region.questionNumber === "20");
+    const rightColumnAnswers = questionTwenty.filter((region) =>
+      region.regionType === "answer" && region.xRatio > 0.5,
+    );
+    const explanation = questionTwenty.find((region) => region.regionType === "explanation");
+
+    expect(rightColumnAnswers).toHaveLength(0);
+    expect(explanation).toBeDefined();
+    expect(explanation!.yRatio * 800).toBeLessThan(60);
+    expect((explanation!.yRatio + explanation!.heightRatio) * 800).toBeGreaterThan(180);
+  });
+
   it("marks image-only pages as not extractable", () => {
     expect(hasExtractableText([])).toBe(false);
     expect(hasExtractableText([{ text: "짧음", x: 0, y: 0, width: 1, height: 1 }])).toBe(false);

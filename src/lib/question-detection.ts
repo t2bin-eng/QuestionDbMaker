@@ -56,7 +56,8 @@ interface ForcedColumnLayout {
 const QUESTION_MARKER = /^\s*(\d{1,3})\s*[.)](?!\d)(?:\s|$)/;
 const QUESTION_CUE = /[?？]$|\[(?:\d+)\s*점\]|(?:옳은|옳지 않은|적절한|적절하지 않은|고르시오|것은)/;
 const CHOICE_CUE = /^[①②③④⑤⑥]/;
-const SECTION_BOUNDARY = /^(?:정답|해설|풀이|해답|정답률|보기\s*선택\s*비율)(?:\s|$)/;
+const ANSWER_GUIDANCE = /^정답\s*(?:찾기|확인|분석|근거)(?:\s|$)/;
+const SECTION_BOUNDARY = /^(?:정답(?!\s*(?:찾기|확인|분석|근거)(?:\s|$))|해설|풀이|해답|정답률|보기\s*선택\s*비율)(?:\s|$)/;
 const ANSWER_BOUNDARY = /^정답(?:\s|$)/;
 const EXPLANATION_BOUNDARY = /^(?:해설|풀이|해답)(?:\s|$)/;
 const FOOTER_CUE = /저작권|무단\s*(?:복제|전재)|^\s*\d+\s*\/\s*\d+\s*$/;
@@ -667,7 +668,7 @@ export function detectDocumentQuestionRegions(pages: PdfPageTextContent[]) {
 
     for (const line of segmentLines) {
       const marker = page.markers.find((candidate) => candidate.line === line);
-      const boundaryType = ANSWER_BOUNDARY.test(line.text)
+      const boundaryType = ANSWER_BOUNDARY.test(line.text) && !ANSWER_GUIDANCE.test(line.text)
         ? "answer" as const
         : EXPLANATION_BOUNDARY.test(line.text)
           ? "explanation" as const
